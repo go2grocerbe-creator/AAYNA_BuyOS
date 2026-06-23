@@ -13,17 +13,21 @@ CREAM = "FBF7F2"
 ANTIQUE_GOLD = "B89B5E"
 ESPRESSO = "3B2F2A"
 WHITE = "FFFFFF"
+SAGE = "8FA98E"
+MAUVE = "6B4F4F"
 GREEN = "C6EFCE"
 GREEN_FONT = "1E7B34"
 YELLOW = "FFF3C4"
 YELLOW_FONT = "9C7A00"
+ORANGE = "FCE4C4"
+ORANGE_FONT = "B2650A"
 RED = "F8CFCB"
 RED_FONT = "B23A32"
 
 wb = Workbook()
 
 # =====================================================================
-# TAB 1: SETTINGS  (built first so other tabs can reference named ranges)
+# TAB: SETTINGS  (built first so other tabs can reference named ranges)
 # =====================================================================
 ws_set = wb.active
 ws_set.title = "Settings"
@@ -49,11 +53,18 @@ settings_rows = [
     ("Default misc fee per unit (BDT)", 15, "Packaging, handling, platform fees per piece"),
     ("Default markup % over landed cost", 1.0, "1.0 = 100% markup (sell at 2x landed cost)"),
     ("Target max selling price (BDT)", 700, "AAYNA's 'mostly under' price ceiling"),
-    ("Weight: Trend Score", 0.20, "Must add up to 1.00 across the 5 weights"),
-    ("Weight: Brand Fit Score", 0.25, ""),
-    ("Weight: Demand Score", 0.20, ""),
-    ("Weight: Competition Score", 0.15, ""),
-    ("Weight: Price Fit Score", 0.20, ""),
+    ("Hard reject price ceiling (BDT)", 1000, "Above the target price but at/under this = 'Price Review' "
+        "(negotiable). Above this = automatic 'Reject'."),
+    ("Weight: Feminine Score", 0.10, "All 10 weights below must add up to 1.00"),
+    ("Weight: Trend Score", 0.10, ""),
+    ("Weight: AAYNA Aesthetic Fit Score", 0.15, ""),
+    ("Weight: Easy to Style Score", 0.08, ""),
+    ("Weight: Lightweight Score", 0.07, ""),
+    ("Weight: Reels/Photo Potential Score", 0.10, ""),
+    ("Weight: Giftability Score", 0.08, ""),
+    ("Weight: Price Fit Score", 0.12, ""),
+    ("Weight: Demand Score", 0.12, ""),
+    ("Weight: Quality/Risk Score", 0.08, ""),
     ("Buy threshold (score >=)", 75, "Total Product Score is out of 100"),
     ("Maybe threshold (score >=)", 50, "Below this = Reject"),
 ]
@@ -69,9 +80,9 @@ for r, row in enumerate(settings_rows, start=4):
             if c == 3:
                 cell.font = note_font
 
-ws_set.column_dimensions["A"].width = 34
+ws_set.column_dimensions["A"].width = 36
 ws_set.column_dimensions["B"].width = 12
-ws_set.column_dimensions["C"].width = 46
+ws_set.column_dimensions["C"].width = 50
 
 # Named ranges for the settings values (column B of each row)
 named_map = {
@@ -81,20 +92,26 @@ named_map = {
     "MISC_FEE": 8,
     "MARKUP_PCT": 9,
     "MAX_PRICE": 10,
-    "W_TREND": 11,
-    "W_BRAND": 12,
-    "W_DEMAND": 13,
-    "W_COMPETITION": 14,
-    "W_PRICEFIT": 15,
-    "BUY_THRESHOLD": 16,
-    "MAYBE_THRESHOLD": 17,
+    "HARD_REJECT_PRICE": 11,
+    "W_FEMININE": 12,
+    "W_TREND": 13,
+    "W_AESTHETIC": 14,
+    "W_STYLE": 15,
+    "W_LIGHT": 16,
+    "W_REELS": 17,
+    "W_GIFT": 18,
+    "W_PRICEFIT": 19,
+    "W_DEMAND": 20,
+    "W_QUALITY": 21,
+    "BUY_THRESHOLD": 22,
+    "MAYBE_THRESHOLD": 23,
 }
 for name, row in named_map.items():
     ref = f"Settings!$B${row}"
     wb.defined_names[name] = DefinedName(name, attr_text=ref)
 
 # =====================================================================
-# TAB 2: DROPDOWNS  (lists used for data validation everywhere)
+# TAB: DROPDOWNS  (lists used for data validation everywhere)
 # =====================================================================
 ws_lists = wb.create_sheet("Dropdown Lists")
 ws_lists.sheet_properties.tabColor = ANTIQUE_GOLD
@@ -104,7 +121,7 @@ lists = {
     "B": ("Category", ["Earrings", "Necklace", "Bracelet", "Ring", "Hair Accessory", "Bag", "Belt",
                         "Sunglasses", "Watch", "Scarf", "Hijab Accessory", "Other"]),
     "C": ("Source Currency", ["BDT", "USD", "RMB"]),
-    "D": ("Decision", ["Buy", "Maybe", "Reject"]),
+    "D": ("Decision", ["Buy", "Maybe", "Price Review", "Reject"]),
     "E": ("Approval Status", ["Pending", "Approved", "Rejected", "On Hold"]),
     "F": ("Score (1-5)", [1, 2, 3, 4, 5]),
 }
@@ -120,18 +137,18 @@ for col, (title, values) in lists.items():
 wb.defined_names["LIST_PLATFORM"] = DefinedName("LIST_PLATFORM", attr_text="'Dropdown Lists'!$A$2:$A$7")
 wb.defined_names["LIST_CATEGORY"] = DefinedName("LIST_CATEGORY", attr_text="'Dropdown Lists'!$B$2:$B$13")
 wb.defined_names["LIST_CURRENCY"] = DefinedName("LIST_CURRENCY", attr_text="'Dropdown Lists'!$C$2:$C$4")
-wb.defined_names["LIST_DECISION"] = DefinedName("LIST_DECISION", attr_text="'Dropdown Lists'!$D$2:$D$4")
+wb.defined_names["LIST_DECISION"] = DefinedName("LIST_DECISION", attr_text="'Dropdown Lists'!$D$2:$D$5")
 wb.defined_names["LIST_APPROVAL"] = DefinedName("LIST_APPROVAL", attr_text="'Dropdown Lists'!$E$2:$E$5")
 wb.defined_names["LIST_SCORE"] = DefinedName("LIST_SCORE", attr_text="'Dropdown Lists'!$F$2:$F$6")
 
 # =====================================================================
-# TAB 3: PRODUCT TRACKER (the main sheet)
+# TAB: PRODUCT TRACKER (the main sheet)
 # =====================================================================
 ws = wb.create_sheet("Product Tracker", 0)
 ws.sheet_properties.tabColor = DUSTY_ROSE
 
 columns = [
-    # (header, width, group_color)
+    # (header, width, group_color) -- 35 visible columns, A..AI
     ("SKU", 12, DUSTY_ROSE),
     ("Date Added", 12, DUSTY_ROSE),
     ("Product Name", 26, DUSTY_ROSE),
@@ -149,23 +166,41 @@ columns = [
     ("Misc Fees/Unit (BDT)", 13, ANTIQUE_GOLD),
     ("Estimated Landed Cost (BDT)", 15, ANTIQUE_GOLD),
 
-    ("Suggested Selling Price (BDT)", 16, "8FA98E"),
-    ("Expected Profit/Unit (BDT)", 14, "8FA98E"),
-    ("Profit Margin %", 12, "8FA98E"),
+    ("Suggested Selling Price (BDT)", 16, SAGE),
+    ("Expected Profit/Unit (BDT)", 14, SAGE),
+    ("Profit Margin %", 12, SAGE),
 
+    ("Feminine Score (1-5)", 12, ESPRESSO),
     ("Trend Score (1-5)", 11, ESPRESSO),
-    ("Brand Fit Score (1-5)", 11, ESPRESSO),
-    ("Demand Score (1-5)", 11, ESPRESSO),
-    ("Competition Score (1-5)", 12, ESPRESSO),
-    ("Price Fit Score (1-5)", 11, ESPRESSO),
+    ("AAYNA Aesthetic Fit Score (1-5)", 14, ESPRESSO),
+    ("Easy to Style Score (1-5)", 12, ESPRESSO),
+    ("Lightweight Score (1-5)", 12, ESPRESSO),
+    ("Reels/Photo Potential Score (1-5)", 14, ESPRESSO),
+    ("Giftability Score (1-5)", 12, ESPRESSO),
+    ("Price Fit Score (1-5)", 12, ESPRESSO),
+    ("Demand Score (1-5)", 12, ESPRESSO),
+    ("Quality/Risk Score (1-5)", 12, ESPRESSO),
+
     ("Total Product Score (/100)", 13, ESPRESSO),
-    ("Decision", 11, ESPRESSO),
+    ("Decision", 13, ESPRESSO),
     ("Reason", 28, ESPRESSO),
 
-    ("SKU/Content/Reel Idea", 30, "6B4F4F"),
-    ("Approval Status", 13, "6B4F4F"),
-    ("Approved By", 14, "6B4F4F"),
-    ("Date Decided", 13, "6B4F4F"),
+    ("Content/Reel Idea", 30, MAUVE),
+    ("Approval Status", 13, MAUVE),
+    ("Approved By", 14, MAUVE),
+    ("Date Decided", 13, MAUVE),
+]
+
+# Hidden helper columns (AJ..AN) -- rank keys used by the Dashboard tab to find
+# Top-N products without relying on QUERY/FILTER/SORT (not available in every
+# spreadsheet app). Each key subtracts ROW()*0.0000001 so every key is unique,
+# which keeps LARGE()+MATCH() lookups on the Dashboard from colliding on ties.
+helper_columns = [
+    "Rank Key: Overall (hidden)",
+    "Rank Key: Under 700 BDT (hidden)",
+    "Rank Key: Reels/Photo (hidden)",
+    "Rank Key: Giftability (hidden)",
+    "Rank Key: Needs Review (hidden)",
 ]
 
 n_data_rows = 40
@@ -176,7 +211,7 @@ ws["A1"].font = Font(bold=True, size=14, color=ESPRESSO)
 ws.merge_cells("A1:H1")
 ws["I1"] = "Reflect your everyday style — sourcing decisions, made together."
 ws["I1"].font = Font(italic=True, color="6B5B53", size=10)
-ws.merge_cells("I1:T1")
+ws.merge_cells("I1:R1")
 
 for idx, (name, width, color) in enumerate(columns, start=1):
     col_letter = get_column_letter(idx)
@@ -186,7 +221,18 @@ for idx, (name, width, color) in enumerate(columns, start=1):
     cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
     ws.column_dimensions[col_letter].width = width
 
-ws.row_dimensions[header_row].height = 38
+helper_start_idx = len(columns) + 1  # AJ
+for offset, name in enumerate(helper_columns):
+    idx = helper_start_idx + offset
+    col_letter = get_column_letter(idx)
+    cell = ws.cell(row=header_row, column=idx, value=name)
+    cell.fill = PatternFill("solid", fgColor="BFBFBF")
+    cell.font = Font(bold=True, color=WHITE, size=9)
+    cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+    ws.column_dimensions[col_letter].width = 10
+    ws.column_dimensions[col_letter].hidden = True
+
+ws.row_dimensions[header_row].height = 42
 ws.freeze_panes = "C3"
 
 thin = Side(style="thin", color="D9CDC3")
@@ -209,11 +255,36 @@ for r in range(first_data_row, last_data_row + 1):
     ws[f"Q{r}"] = f'=IF(P{r}="","",P{r}-O{r})'
     # Profit Margin % (R)
     ws[f"R{r}"] = f'=IF(OR(P{r}="",P{r}=0),"",Q{r}/P{r})'
-    # Total Product Score (X) weighted
-    ws[f"X{r}"] = (f'=IF(COUNT(S{r}:W{r})<5,"",'
-                   f'(S{r}*W_TREND+T{r}*W_BRAND+U{r}*W_DEMAND+V{r}*W_COMPETITION+W{r}*W_PRICEFIT)/5*100)')
-    # Decision (Y)
-    ws[f"Y{r}"] = f'=IF(X{r}="","",IF(X{r}>=BUY_THRESHOLD,"Buy",IF(X{r}>=MAYBE_THRESHOLD,"Maybe","Reject")))'
+    # Total Product Score (AC), weighted across all 10 criteria, out of 100
+    ws[f"AC{r}"] = (
+        f'=IF(COUNT(S{r}:AB{r})<10,"",'
+        f'(S{r}*W_FEMININE+T{r}*W_TREND+U{r}*W_AESTHETIC+V{r}*W_STYLE+W{r}*W_LIGHT+'
+        f'X{r}*W_REELS+Y{r}*W_GIFT+Z{r}*W_PRICEFIT+AA{r}*W_DEMAND+AB{r}*W_QUALITY)/5*100)'
+    )
+    # Decision (AD)
+    # Price-based hard rules run first and apply even if scoring isn't finished yet:
+    #   price > HARD_REJECT_PRICE  -> Reject outright
+    #   MAX_PRICE < price <= HARD_REJECT_PRICE -> Price Review (negotiable, not dead)
+    # Once price clears the bar, a low Quality/Risk or Aesthetic Fit score (<=2)
+    # caps a would-be "Buy" down to "Maybe" instead of forcing a flat Reject.
+    ws[f"AD{r}"] = (
+        f'=IF(P{r}="","",'
+        f'IF(P{r}>HARD_REJECT_PRICE,"Reject",'
+        f'IF(P{r}>MAX_PRICE,"Price Review",'
+        f'IF(AC{r}="","",'
+        f'IF(AND(AC{r}>=BUY_THRESHOLD,OR(AB{r}<=2,U{r}<=2)),"Maybe",'
+        f'IF(AC{r}>=BUY_THRESHOLD,"Buy",'
+        f'IF(AC{r}>=MAYBE_THRESHOLD,"Maybe","Reject")))))))'
+    )
+    # ---- Hidden rank-key helper columns for the Dashboard tab ----
+    ws[f"AJ{r}"] = f'=IF(AC{r}="",-9999-ROW()*0.0000001,AC{r}-ROW()*0.0000001)'
+    ws[f"AK{r}"] = f'=IF(OR(AC{r}="",P{r}="",P{r}>MAX_PRICE),-9999-ROW()*0.0000001,AC{r}-ROW()*0.0000001)'
+    ws[f"AL{r}"] = f'=IF(AC{r}="",-9999-ROW()*0.0000001,X{r}*1000+AC{r}-ROW()*0.0000001)'
+    ws[f"AM{r}"] = f'=IF(AC{r}="",-9999-ROW()*0.0000001,Y{r}*1000+AC{r}-ROW()*0.0000001)'
+    ws[f"AN{r}"] = (
+        f'=IF(AND(OR(AD{r}="Maybe",AD{r}="Price Review"),AG{r}<>"Approved",AG{r}<>"Rejected"),'
+        f'IF(AC{r}="",0,AC{r})-ROW()*0.0000001,-9999-ROW()*0.0000001)'
+    )
 
     for c in range(1, len(columns) + 1):
         ws.cell(row=r, column=c).border = border
@@ -226,8 +297,8 @@ for r in range(first_data_row, last_data_row + 1):
         ws[f"{col}{r}"].number_format = '#,##0 "BDT"'
     ws[f"M{r}"].number_format = "0%"
     ws[f"R{r}"].number_format = "0%"
-    ws[f"X{r}"].number_format = "0"
-    ws[f"AD{r}"].number_format = "yyyy-mm-dd"
+    ws[f"AC{r}"].number_format = "0"
+    ws[f"AI{r}"].number_format = "yyyy-mm-dd"
 
 # Light banding fill for readability
 band_fill = PatternFill("solid", fgColor=CREAM)
@@ -250,12 +321,13 @@ def add_dv(formula1, col_letter, tooltip=""):
 add_dv("LIST_PLATFORM", "F", "Where this product is sourced from")
 add_dv("LIST_CATEGORY", "E", "Product category")
 add_dv("LIST_CURRENCY", "J", "Currency the unit cost is quoted in")
-add_dv("LIST_APPROVAL", "AB", "Partner approval status")
-for col in ["S", "T", "U", "V", "W"]:
+add_dv("LIST_APPROVAL", "AG", "Partner approval status")
+score_cols = ["S", "T", "U", "V", "W", "X", "Y", "Z", "AA", "AB"]
+for col in score_cols:
     add_dv("LIST_SCORE", col, "Score 1 (worst) to 5 (best)")
 
-# ---------------- Conditional formatting on Decision (Y) ----------------
-rng = f"Y{first_data_row}:Y{last_data_row}"
+# ---------------- Conditional formatting on Decision (AD) ----------------
+rng = f"AD{first_data_row}:AD{last_data_row}"
 ws.conditional_formatting.add(
     rng, CellIsRule(operator="equal", formula=['"Buy"'],
                      fill=PatternFill("solid", fgColor=GREEN), font=Font(color=GREEN_FONT, bold=True)))
@@ -263,18 +335,32 @@ ws.conditional_formatting.add(
     rng, CellIsRule(operator="equal", formula=['"Maybe"'],
                      fill=PatternFill("solid", fgColor=YELLOW), font=Font(color=YELLOW_FONT, bold=True)))
 ws.conditional_formatting.add(
+    rng, CellIsRule(operator="equal", formula=['"Price Review"'],
+                     fill=PatternFill("solid", fgColor=ORANGE), font=Font(color=ORANGE_FONT, bold=True)))
+ws.conditional_formatting.add(
     rng, CellIsRule(operator="equal", formula=['"Reject"'],
                      fill=PatternFill("solid", fgColor=RED), font=Font(color=RED_FONT, bold=True)))
 
-# Highlight Suggested Selling Price in red text if it exceeds the MAX_PRICE ceiling
+# Highlight Suggested Selling Price if it crosses either price ceiling
 price_rng = f"P{first_data_row}:P{last_data_row}"
 ws.conditional_formatting.add(
     price_rng,
-    FormulaRule(formula=[f"P{first_data_row}>MAX_PRICE"], font=Font(color="B23A32", bold=True))
-)
+    FormulaRule(formula=[f"P{first_data_row}>HARD_REJECT_PRICE"], font=Font(color=RED_FONT, bold=True)))
+ws.conditional_formatting.add(
+    price_rng,
+    FormulaRule(formula=[f"AND(P{first_data_row}>MAX_PRICE,P{first_data_row}<=HARD_REJECT_PRICE)"],
+                font=Font(color=ORANGE_FONT, bold=True)))
+
+# Warn on low Aesthetic Fit (U) and Quality/Risk (AB) scores -- these are the
+# two scores that cap a "Buy" down to "Maybe" per the hard rejection rules.
+for col in ["U", "AB"]:
+    warn_rng = f"{col}{first_data_row}:{col}{last_data_row}"
+    ws.conditional_formatting.add(
+        warn_rng, CellIsRule(operator="lessThanOrEqual", formula=["2"],
+                              fill=PatternFill("solid", fgColor=RED), font=Font(color=RED_FONT, bold=True)))
 
 # Approval status colors
-appr_rng = f"AB{first_data_row}:AB{last_data_row}"
+appr_rng = f"AG{first_data_row}:AG{last_data_row}"
 ws.conditional_formatting.add(appr_rng, CellIsRule(operator="equal", formula=['"Approved"'],
                      fill=PatternFill("solid", fgColor=GREEN)))
 ws.conditional_formatting.add(appr_rng, CellIsRule(operator="equal", formula=['"Rejected"'],
@@ -282,31 +368,246 @@ ws.conditional_formatting.add(appr_rng, CellIsRule(operator="equal", formula=['"
 ws.conditional_formatting.add(appr_rng, CellIsRule(operator="equal", formula=['"Pending"'],
                      fill=PatternFill("solid", fgColor=YELLOW)))
 
-# ---------------- Sample example rows (first 2 data rows) ----------------
-sample1 = {
+# ---------------- Sample example rows (first 5 data rows) ----------------
+# Each row is built to land on a different branch of the Decision formula so
+# partners can see exactly how the hard rejection rules behave.
+sample_buy = {
     "B": "2026-06-20", "C": "Antique Gold Hoop Earrings", "D": "drive.google.com/sample1",
     "E": "Earrings", "F": "AliExpress", "G": "aliexpress.com/item/sample1", "H": "Lin Wei Trading",
     "I": 1.8, "J": "USD", "L": 25, "N": 15,
-    "S": 4, "T": 5, "U": 4, "V": 3, "W": 4,
-    "AA": "Strong match for AAYNA's gold/feminine aesthetic; trending on TikTok.",
-    "AC": "Reel: 'Get Ready With Me' earring swap, 3 looks in 15 sec.",
-    "AB": "Approved", "AD": "2026-06-21",
+    "S": 5, "T": 5, "U": 5, "V": 4, "W": 5, "X": 5, "Y": 4, "Z": 5, "AA": 4, "AB": 5,
+    "AE": "Strong rose-gold match, trending on TikTok, lightweight and giftable.",
+    "AF": "Reel: 'Get Ready With Me' earring swap, 3 looks in 15 sec.",
+    "AG": "Approved", "AH": "Nadia", "AI": "2026-06-21",
 }
-sample2 = {
-    "B": "2026-06-21", "C": "Dusty Rose Pearl Hair Clip Set", "D": "drive.google.com/sample2",
-    "E": "Hair Accessory", "F": "SkyBuyBD", "G": "skybuybd.com/item/sample2", "H": "Skybuy Supplier 22",
-    "I": 90, "J": "BDT", "L": 10, "M": 0.05, "N": 12,
-    "S": 3, "T": 4, "U": 3, "V": 2, "W": 5,
-    "AA": "Good margin but lots of similar clips already in market; watch competition.",
-    "AC": "Carousel post: 5 hairstyles using one clip set.",
-    "AB": "Pending", "AD": "",
+sample_maybe_quality_cap = {
+    "B": "2026-06-21", "C": "Beaded Choker Necklace", "D": "drive.google.com/sample2",
+    "E": "Necklace", "F": "SkyBuyBD", "G": "skybuybd.com/item/sample2", "H": "Skybuy Supplier 14",
+    "I": 60, "J": "BDT", "L": 10, "N": 12,
+    "S": 5, "T": 4, "U": 5, "V": 4, "W": 4, "X": 4, "Y": 4, "Z": 5, "AA": 4, "AB": 2,
+    "AE": "Gorgeous and on-trend, but beads chip easily in transit — quality/return risk caps this at Maybe.",
+    "AF": "Try-on reel layering 3 chokers.",
+    "AG": "Pending",
 }
-for sample, row in zip([sample1, sample2], [first_data_row, first_data_row + 1]):
+sample_reject_low_score = {
+    "B": "2026-06-21", "C": "Plain Plastic Hair Clip", "D": "drive.google.com/sample3",
+    "E": "Hair Accessory", "F": "1688", "G": "1688.com/item/sample3", "H": "Generic Factory 8",
+    "I": 25, "J": "BDT", "L": 8, "N": 10,
+    "S": 2, "T": 2, "U": 2, "V": 3, "W": 3, "X": 2, "Y": 2, "Z": 4, "AA": 2, "AB": 3,
+    "AE": "Generic look, low trend/demand/aesthetic fit — total score too low to justify stocking.",
+    "AF": "",
+    "AG": "Rejected",
+}
+sample_price_review = {
+    "B": "2026-06-22", "C": "Embroidered Tote Bag", "D": "drive.google.com/sample4",
+    "E": "Bag", "F": "AliExpress", "G": "aliexpress.com/item/sample4", "H": "Lin Wei Trading",
+    "I": 300, "J": "BDT", "L": 40, "N": 15,
+    "S": 4, "T": 4, "U": 4, "V": 3, "W": 3, "X": 3, "Y": 4, "Z": 2, "AA": 4, "AB": 4,
+    "AE": "Lovely design, but landed cost pushes selling price over 700 — needs supplier price negotiation.",
+    "AF": "Flatlay reel with 3 outfit pairings.",
+    "AG": "Pending",
+}
+sample_hard_reject_price = {
+    "B": "2026-06-22", "C": "Designer-Inspired Sunglasses", "D": "drive.google.com/sample5",
+    "E": "Sunglasses", "F": "AliExpress", "G": "aliexpress.com/item/sample5", "H": "Guangzhou Eyewear Co",
+    "I": 15, "J": "USD", "L": 50, "N": 15,
+    "AE": "Cost alone puts this far above our price ceiling even before scoring — auto-rejected.",
+    "AF": "",
+    "AG": "Rejected",
+}
+samples = [sample_buy, sample_maybe_quality_cap, sample_reject_low_score,
+           sample_price_review, sample_hard_reject_price]
+for sample, row in zip(samples, range(first_data_row, first_data_row + len(samples))):
     for col, val in sample.items():
         ws[f"{col}{row}"] = val
 
 # =====================================================================
-# TAB 4: INSTRUCTIONS
+# TAB: DASHBOARD
+# =====================================================================
+ws_dash = wb.create_sheet("Dashboard")
+ws_dash.sheet_properties.tabColor = SAGE
+
+PT = "'Product Tracker'"
+pt_first, pt_last = first_data_row, last_data_row
+
+for col, width in zip("ABCDEF", [6, 30, 12, 12, 14, 16]):
+    ws_dash.column_dimensions[col].width = width
+
+ws_dash["A1"] = "AAYNA Product Scout Lite — Dashboard"
+ws_dash["A1"].font = Font(bold=True, size=14, color=ESPRESSO)
+ws_dash.merge_cells("A1:F1")
+ws_dash["A2"] = "Live view of the Product Tracker tab. Nothing here is editable — everything updates automatically."
+ws_dash["A2"].font = note_font
+ws_dash.merge_cells("A2:F2")
+
+
+def section_title(row, text, span="A:F"):
+    cell = ws_dash[f"A{row}"]
+    cell.value = text
+    cell.font = Font(bold=True, size=12, color=WHITE)
+    cell.fill = PatternFill("solid", fgColor=DUSTY_ROSE)
+    first_col, last_col = span.split(":")
+    ws_dash.merge_cells(f"{first_col}{row}:{last_col}{row}")
+
+
+def table_header(row, labels):
+    for i, label in enumerate(labels):
+        cell = ws_dash.cell(row=row, column=i + 1, value=label)
+        cell.font = Font(bold=True, color=ESPRESSO)
+        cell.fill = PatternFill("solid", fgColor=DUSTY_ROSE_LIGHT)
+        cell.alignment = Alignment(horizontal="center")
+
+
+def add_topn_table(start_row, key_col, n):
+    """n ranked rows pulled from Product Tracker via LARGE()+MATCH() on a
+    hidden rank-key column. Works in Excel/LibreOffice/Sheets alike (no
+    QUERY/FILTER/SORT dynamic arrays needed)."""
+    key_rng = f"{PT}!${key_col}${pt_first}:${key_col}${pt_last}"
+    for i in range(n):
+        row = start_row + i
+        key = f"LARGE({key_rng},{i + 1})"
+        match = f"MATCH({key},{key_rng},0)"
+        valid = f"{key}>-9000"
+        ws_dash.cell(row=row, column=1, value=i + 1)
+        ws_dash.cell(row=row, column=2,
+                     value=f'=IF({valid},IFERROR(INDEX({PT}!$C${pt_first}:$C${pt_last},{match}),""),"")')
+        ws_dash.cell(row=row, column=3,
+                     value=f'=IF({valid},IFERROR(INDEX({PT}!$A${pt_first}:$A${pt_last},{match}),""),"")')
+        ws_dash.cell(row=row, column=4,
+                     value=f'=IF({valid},IFERROR(INDEX({PT}!$AC${pt_first}:$AC${pt_last},{match}),""),"")')
+        ws_dash.cell(row=row, column=5,
+                     value=f'=IF({valid},IFERROR(INDEX({PT}!$AD${pt_first}:$AD${pt_last},{match}),""),"")')
+        ws_dash.cell(row=row, column=6,
+                     value=f'=IF({valid},IFERROR(INDEX({PT}!$P${pt_first}:$P${pt_last},{match}),""),"")')
+        for c in range(1, 7):
+            cell = ws_dash.cell(row=row, column=c)
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center" if c in (1, 4, 5) else "left")
+        ws_dash.cell(row=row, column=4).number_format = "0"
+        ws_dash.cell(row=row, column=6).number_format = '#,##0 "BDT"'
+
+
+# ---- Summary counts ----
+section_title(4, "Summary")
+labels = ["Total products scouted", "Buy", "Maybe", "Price Review", "Reject"]
+formulas = [
+    f'=COUNTA({PT}!C{pt_first}:C{pt_last})',
+    f'=COUNTIF({PT}!AD{pt_first}:AD{pt_last},"Buy")',
+    f'=COUNTIF({PT}!AD{pt_first}:AD{pt_last},"Maybe")',
+    f'=COUNTIF({PT}!AD{pt_first}:AD{pt_last},"Price Review")',
+    f'=COUNTIF({PT}!AD{pt_first}:AD{pt_last},"Reject")',
+]
+for i, (label, formula) in enumerate(zip(labels, formulas)):
+    r = 5 + i
+    ws_dash[f"A{r}"] = label
+    ws_dash[f"A{r}"].font = label_font
+    ws_dash[f"B{r}"] = formula
+    ws_dash[f"B{r}"].font = Font(bold=True, size=13, color=ESPRESSO)
+    ws_dash[f"B{r}"].alignment = Alignment(horizontal="center")
+
+# ---- Top 10 highest scoring products ----
+row = 12
+section_title(row, "Top 10 Highest Scoring Products")
+table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
+add_topn_table(row + 2, "AJ", 10)
+
+# ---- Best products under BDT 700 ----
+row = 24
+section_title(row, "Best Products Under BDT 700")
+table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
+add_topn_table(row + 2, "AK", 5)
+
+# ---- Best products for reels/photos ----
+row = 31
+section_title(row, "Best Products for Reels/Photos")
+table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
+add_topn_table(row + 2, "AL", 5)
+
+# ---- Best giftable products ----
+row = 38
+section_title(row, "Best Giftable Products")
+table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
+add_topn_table(row + 2, "AM", 5)
+
+# ---- Products needing partner review ----
+row = 45
+section_title(row, "Products Needing Partner Review (Maybe / Price Review, not yet decided)")
+table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
+add_topn_table(row + 2, "AN", 15)
+
+# =====================================================================
+# TAB: CLAUDE SCORING PROMPT
+# =====================================================================
+ws_prompt = wb.create_sheet("Claude Scoring Prompt")
+ws_prompt.sheet_properties.tabColor = MAUVE
+ws_prompt.column_dimensions["A"].width = 100
+
+ws_prompt["A1"] = "AAYNA Product Scout Lite — Claude Scoring Prompt"
+ws_prompt["A1"].font = Font(bold=True, size=14, color=ESPRESSO)
+
+ws_prompt["A2"] = ("Copy everything in the box below into Claude (or another AI assistant), paste in the "
+                    "product photo/link/description where indicated, then copy Claude's reply back into the "
+                    "matching score columns on the Product Tracker tab.")
+ws_prompt["A2"].font = note_font
+ws_prompt["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+ws_prompt.row_dimensions[2].height = 40
+
+claude_prompt = (
+    "You are helping AAYNA, a Bangladesh-based women's accessories brand, evaluate a sourcing "
+    "candidate product.\n\n"
+    "AAYNA's brand identity: feminine, trendy, affordable, clean and modern, with a warm, "
+    "social-media-friendly feel. Visual aesthetic: dusty rose, cream white, antique gold, and "
+    "espresso charcoal. Most products sell under BDT 700.\n\n"
+    "Here is the product: [paste product name, description, photos/link, and supplier price here]\n\n"
+    "Score this product from 1 (worst) to 5 (best) on each of these 10 criteria, with a one-line "
+    "reason for each score:\n\n"
+    "1. Feminine Score - how feminine/delicate does it look?\n"
+    "2. Trend Score - how on-trend is it right now (TikTok/Instagram/competitors)?\n"
+    "3. AAYNA Aesthetic Fit Score - how well does it match our dusty rose / cream / antique gold look?\n"
+    "4. Easy to Style Score - how easily can a customer style this with everyday outfits?\n"
+    "5. Lightweight Score - how light/comfortable is it to wear or carry?\n"
+    "6. Reels/Photo Potential Score - how good would this look in a Reel, photo, or unboxing video?\n"
+    "7. Giftability Score - how good is this as a gift?\n"
+    "8. Price Fit Score - how comfortably can we sell this under BDT 700 and still profit?\n"
+    "9. Demand Score - how likely is our target customer to actually want and buy this?\n"
+    "10. Quality/Risk Score - how low is the risk of poor quality, damage in transit, or returns?\n\n"
+    "Then give:\n"
+    "- A Recommended Decision: Buy, Maybe, Price Review, or Reject\n"
+    "- A one-sentence Reason for that decision\n"
+    "- A short Content/Reel Idea for how we'd promote this product\n\n"
+    "Format your answer exactly like this so it's easy to paste into the sheet:\n"
+    "Feminine: _ - reason\n"
+    "Trend: _ - reason\n"
+    "Aesthetic Fit: _ - reason\n"
+    "Easy to Style: _ - reason\n"
+    "Lightweight: _ - reason\n"
+    "Reels/Photo: _ - reason\n"
+    "Giftability: _ - reason\n"
+    "Price Fit: _ - reason\n"
+    "Demand: _ - reason\n"
+    "Quality/Risk: _ - reason\n"
+    "Recommended Decision: _\n"
+    "Reason: _\n"
+    "Content/Reel Idea: _"
+)
+ws_prompt["A4"] = claude_prompt
+ws_prompt["A4"].alignment = Alignment(wrap_text=True, vertical="top")
+ws_prompt["A4"].font = Font(name="Consolas", size=10, color=ESPRESSO)
+ws_prompt["A4"].fill = PatternFill("solid", fgColor=CREAM)
+thick_border = Border(left=Side(style="medium", color=ANTIQUE_GOLD), right=Side(style="medium", color=ANTIQUE_GOLD),
+                       top=Side(style="medium", color=ANTIQUE_GOLD), bottom=Side(style="medium", color=ANTIQUE_GOLD))
+ws_prompt["A4"].border = thick_border
+ws_prompt.row_dimensions[4].height = 520
+
+ws_prompt["A6"] = ("Tip: if you ever change the 10 scoring criteria, their order, or the price ceiling in the "
+                    "Settings tab, update this prompt to match so Claude's answers keep lining up with the "
+                    "Product Tracker columns.")
+ws_prompt["A6"].font = note_font
+ws_prompt["A6"].alignment = Alignment(wrap_text=True, vertical="top")
+ws_prompt.row_dimensions[6].height = 40
+
+# =====================================================================
+# TAB: INSTRUCTIONS
 # =====================================================================
 ws_help = wb.create_sheet("Instructions")
 ws_help.sheet_properties.tabColor = ESPRESSO
@@ -321,39 +622,61 @@ intro = (
     "This sheet helps the 3 of us score and decide on products from SkyBuyBD, AliExpress, "
     "or other China sourcing platforms — fast, consistently, and without spreadsheets fights.\n\n"
     "Workflow: Whoever finds a product adds a new row and fills in the WHITE input columns only. "
-    "The colored formula columns calculate themselves. Then each partner fills their Score columns, "
-    "and the sheet tells you Buy / Maybe / Reject automatically."
+    "The colored formula columns calculate themselves. Then each partner fills in the 10 score columns "
+    "(or pastes in Claude's scores from the Claude Scoring Prompt tab), and the sheet tells you "
+    "Buy / Maybe / Price Review / Reject automatically."
 )
 ws_help["A2"] = "Overview"
 ws_help["A2"].font = label_font
 ws_help["B2"] = intro
 ws_help["B2"].alignment = Alignment(wrap_text=True, vertical="top")
-ws_help.row_dimensions[2].height = 90
+ws_help.row_dimensions[2].height = 100
 
 rows_help = [
-    ("Step 1 — Add the product", "Fill SKU is automatic. Enter Date Added, Product Name, Image/Link, Category, "
-        "Source Platform, Source URL, Supplier Name."),
+    ("Step 1 — Add the product", "SKU fills in automatically. Enter Date Added, Product Name, Image/Link, "
+        "Category, Source Platform, Source URL, Supplier Name."),
     ("Step 2 — Enter cost info", "Enter Unit Cost in whatever currency the supplier quoted (USD/RMB/BDT), pick the "
         "currency, then enter Shipping Cost/Unit and Misc Fees if known. Customs % and Misc Fees auto-fill from "
         "Settings tab if left blank."),
     ("Step 3 — Let it calculate", "Unit Cost (BDT), Estimated Landed Cost, Suggested Selling Price, Expected Profit, "
         "and Profit Margin % fill in automatically."),
-    ("Step 4 — Score it (1 = worst, 5 = best)", "Trend Score: how hot is this right now (TikTok/IG/competitors)? "
-        "Brand Fit Score: does it match AAYNA's dusty rose / cream / antique gold, feminine-trendy vibe? "
-        "Demand Score: would our audience actually buy this? "
-        "Competition Score: 5 = very few sellers have it, 1 = everyone already sells it. "
-        "Price Fit Score: 5 = comfortably sits under our ~700 BDT price point, 1 = priced way above it."),
-    ("Step 5 — Read the verdict", "Total Product Score (0-100) and Decision (Buy/Maybe/Reject) calculate "
-        "automatically using the weights set in the Settings tab. Buy = green, Maybe = yellow, Reject = red."),
+    ("Step 4 — Score it (1 = worst, 5 = best)",
+        "Feminine: how feminine/delicate does it look? "
+        "Trend: how hot is this right now (TikTok/IG/competitors)? "
+        "AAYNA Aesthetic Fit: how well does it match our dusty rose / cream / antique gold look? "
+        "Easy to Style: how easily can a customer style this with everyday outfits? "
+        "Lightweight: how light/comfortable is it to wear or carry? "
+        "Reels/Photo Potential: how good would this look in a Reel, photo, or unboxing video? "
+        "Giftability: how good is this as a gift? "
+        "Price Fit: how comfortably can we sell this under BDT 700 and still profit? "
+        "Demand: how likely is our target customer to actually want and buy this? "
+        "Quality/Risk: how low is the risk of poor quality, damage in transit, or returns? "
+        "Tip: use the Claude Scoring Prompt tab to get an AI first opinion on all 10 scores at once."),
+    ("Step 5 — Read the verdict", "Total Product Score (0-100) calculates automatically using the weights set in "
+        "the Settings tab. Decision applies these hard rules on top of the score: "
+        "if Suggested Selling Price is over BDT 700, Decision becomes 'Price Review' (and 'Reject' if it's far "
+        "over, above the Hard Reject Price Ceiling in Settings); if Quality/Risk or AAYNA Aesthetic Fit score is "
+        "1 or 2, Decision can never be 'Buy' (it caps at 'Maybe') even if the total score is high. "
+        "Buy = green, Maybe = yellow, Price Review = orange, Reject = red."),
     ("Step 6 — Decide together", "Add a short Reason so the other partners know WHY. Add a Content/Reel Idea so "
         "marketing has a head start. Set Approval Status once all partners agree, note who Approved and the date."),
-    ("Adjusting the formulas", "Don't like the default markup, exchange rate, or scoring weights? Change them ONCE "
-        "in the Settings tab — every row updates automatically. No need to touch the Product Tracker formulas."),
-    ("Color key", "Green = Buy / Approved. Yellow = Maybe / Pending. Red = Reject / Rejected, or a price above "
-        "our 700 BDT ceiling."),
-    ("Tips for 3-partner teams", "Assign one column block per partner if you want speed (e.g. Partner A scores "
-        "Trend+Demand, Partner B scores Brand Fit+Price Fit, Partner C scores Competition) — or all 3 score "
-        "independently and average manually before finalizing. Keep the Reason column honest; it's your shared memory."),
+    ("Adjusting the formulas", "Don't like the default markup, exchange rate, price ceilings, or scoring weights? "
+        "Change them ONCE in the Settings tab — every row updates automatically. No need to touch the Product "
+        "Tracker formulas."),
+    ("The Dashboard tab", "A live, read-only overview: how many products are Buy/Maybe/Price Review/Reject, the "
+        "Top 10 highest scoring products, the best products under BDT 700, the best products for reels/photos, "
+        "the best giftable products, and everything still waiting on partner review. Nothing on this tab needs "
+        "to be filled in by hand — it reads straight from the Product Tracker tab."),
+    ("The Claude Scoring Prompt tab", "A ready-to-copy prompt for getting an AI first opinion on a product's 10 "
+        "scores, a recommended decision, and a content/reel idea, formatted so the reply is easy to paste back "
+        "into the right columns."),
+    ("Color key", "Green = Buy / Approved. Yellow = Maybe / Pending. Orange = Price Review (price is over our 700 "
+        "BDT target but might still be worth negotiating). Red = Reject / Rejected, or a Quality/Risk or "
+        "Aesthetic Fit score of 1-2."),
+    ("Tips for 3-partner teams", "Assign one score block per partner if you want speed (e.g. Partner A scores "
+        "Feminine + Trend + Aesthetic Fit, Partner B scores Easy to Style + Lightweight + Reels/Photo, Partner C "
+        "scores Giftability + Price Fit + Demand + Quality/Risk) — or all 3 score independently and average "
+        "manually before finalizing. Keep the Reason column honest; it's your shared memory."),
 ]
 r = 4
 for title, body in rows_help:
@@ -362,10 +685,10 @@ for title, body in rows_help:
     ws_help[f"A{r}"].alignment = Alignment(wrap_text=True, vertical="top")
     ws_help[f"B{r}"] = body
     ws_help[f"B{r}"].alignment = Alignment(wrap_text=True, vertical="top")
-    ws_help.row_dimensions[r].height = 60
+    ws_help.row_dimensions[r].height = 75
     r += 1
 
-wb._sheets = [ws, ws_set, ws_lists, ws_help]
+wb._sheets = [ws, ws_dash, ws_prompt, ws_set, ws_lists, ws_help]
 
 out_path = "AAYNA_Product_Scout_Lite.xlsx"
 wb.save(out_path)
