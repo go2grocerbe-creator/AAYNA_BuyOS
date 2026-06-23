@@ -22,11 +22,22 @@ AAYNA's specific brand criteria.
    Total Product Score out of 100, then applies hard rejection rules: price
    over BDT 700 forces "Price Review" (or "Reject" if it's far over), and a
    Quality/Risk or Aesthetic Fit score of 1-2 caps the decision at "Maybe"
-   even if the total score is high. Includes 5 demonstration rows, one for
-   each decision branch.
-2. **Dashboard** — read-only live overview: totals by decision, Top 10
-   highest scoring products, best products under BDT 700, best for
-   reels/photos, best giftable products, and everything still awaiting
+   even if the total score is high. Also includes 24 practical sourcing and
+   operations columns: supplier/product ratings, sold/review counts, MOQ and
+   order quantities (with Total Purchase Cost calculating itself), shipping
+   risk (weight/size, fragility, packaging difficulty, courier risk),
+   competitor/market checks, an auto-calculated Auto Flag / Warning (the
+   single biggest problem with a product, e.g. "Price too high", "Quality
+   risk", "Too fragile", "Needs partner review", or "Good candidate"),
+   Sourcing Status, and a 5-item website-readiness checklist that drives a
+   self-calculating Ready for Website Upload? column. Includes 5
+   demonstration rows, one for each decision branch.
+2. **Dashboard** — read-only live overview: totals by decision, total
+   estimated purchase cost for approved products, products ready for website
+   upload, high-risk products, products with high reel/photo potential,
+   products approved but not ordered yet, products ordered but not arrived
+   yet, Top 10 highest scoring products, best products under BDT 700, best
+   for reels/photos, best giftable products, and everything still awaiting
    partner review.
 3. **Claude Scoring Prompt** — a ready-to-copy prompt for getting an AI first
    opinion on a product's 10 scores, recommended decision, and a content/reel

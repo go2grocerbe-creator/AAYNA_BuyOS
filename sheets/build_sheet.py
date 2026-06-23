@@ -15,6 +15,10 @@ ESPRESSO = "3B2F2A"
 WHITE = "FFFFFF"
 SAGE = "8FA98E"
 MAUVE = "6B4F4F"
+INTEL = "C9A66B"
+QTY_COST = "AD8350"
+RISK_OPS = "A4626C"
+CHECKLIST = "6E5C54"
 GREEN = "C6EFCE"
 GREEN_FONT = "1E7B34"
 YELLOW = "FFF3C4"
@@ -67,6 +71,8 @@ settings_rows = [
     ("Weight: Quality/Risk Score", 0.08, ""),
     ("Buy threshold (score >=)", 75, "Total Product Score is out of 100"),
     ("Maybe threshold (score >=)", 50, "Below this = Reject"),
+    ("Low profit margin warning threshold", 0.30, "Auto Flag shows 'Low profit' below this margin, e.g. 0.30 = 30%"),
+    ("MOQ warning threshold (units)", 50, "Auto Flag shows 'MOQ too high' above this quantity"),
 ]
 for r, row in enumerate(settings_rows, start=4):
     for c, val in enumerate(row, start=1):
@@ -105,6 +111,8 @@ named_map = {
     "W_QUALITY": 21,
     "BUY_THRESHOLD": 22,
     "MAYBE_THRESHOLD": 23,
+    "LOW_PROFIT_PCT": 24,
+    "MOQ_WARNING": 25,
 }
 for name, row in named_map.items():
     ref = f"Settings!$B${row}"
@@ -124,6 +132,11 @@ lists = {
     "D": ("Decision", ["Buy", "Maybe", "Price Review", "Reject"]),
     "E": ("Approval Status", ["Pending", "Approved", "Rejected", "On Hold"]),
     "F": ("Score (1-5)", [1, 2, 3, 4, 5]),
+    "G": ("Yes/No", ["Yes", "No"]),
+    "H": ("Risk Level", ["Low", "Medium", "High"]),
+    "I": ("Packaging Difficulty", ["Easy", "Medium", "Hard"]),
+    "J": ("Sourcing Status", ["Not Started", "Sourcing", "Sample Ordered", "Sample Received",
+                               "Approved - Not Ordered", "Ordered", "In Transit", "Arrived", "Live on Website"]),
 }
 for col, (title, values) in lists.items():
     ws_lists[f"{col}1"] = title
@@ -140,6 +153,10 @@ wb.defined_names["LIST_CURRENCY"] = DefinedName("LIST_CURRENCY", attr_text="'Dro
 wb.defined_names["LIST_DECISION"] = DefinedName("LIST_DECISION", attr_text="'Dropdown Lists'!$D$2:$D$5")
 wb.defined_names["LIST_APPROVAL"] = DefinedName("LIST_APPROVAL", attr_text="'Dropdown Lists'!$E$2:$E$5")
 wb.defined_names["LIST_SCORE"] = DefinedName("LIST_SCORE", attr_text="'Dropdown Lists'!$F$2:$F$6")
+wb.defined_names["LIST_YESNO"] = DefinedName("LIST_YESNO", attr_text="'Dropdown Lists'!$G$2:$G$3")
+wb.defined_names["LIST_LEVEL"] = DefinedName("LIST_LEVEL", attr_text="'Dropdown Lists'!$H$2:$H$4")
+wb.defined_names["LIST_PACKAGING"] = DefinedName("LIST_PACKAGING", attr_text="'Dropdown Lists'!$I$2:$I$4")
+wb.defined_names["LIST_SOURCING_STATUS"] = DefinedName("LIST_SOURCING_STATUS", attr_text="'Dropdown Lists'!$J$2:$J$10")
 
 # =====================================================================
 # TAB: PRODUCT TRACKER (the main sheet)
@@ -232,6 +249,51 @@ for offset, name in enumerate(helper_columns):
     ws.column_dimensions[col_letter].width = 10
     ws.column_dimensions[col_letter].hidden = True
 
+# Sourcing & operations columns (AO..BL) -- appended after the hidden rank-key
+# columns so none of the existing column letters above (used throughout the
+# Decision/score formulas) have to move.
+new_columns = [
+    ("Supplier Rating", 12, INTEL),
+    ("Product Rating", 12, INTEL),
+    ("Sold Count / Order Count", 14, INTEL),
+    ("Review Count", 12, INTEL),
+    ("Real Review Photos?", 13, INTEL),
+
+    ("MOQ", 10, QTY_COST),
+    ("Recommended Test Quantity", 14, QTY_COST),
+    ("Final Approved Quantity", 14, QTY_COST),
+    ("Total Purchase Cost (BDT)", 15, QTY_COST),
+
+    ("Weight / Size", 18, RISK_OPS),
+    ("Fragility Level", 12, RISK_OPS),
+    ("Packaging Difficulty", 13, RISK_OPS),
+    ("Courier Risk", 12, RISK_OPS),
+    ("Duplicate Found on BD Market?", 14, RISK_OPS),
+    ("Competitor Price (BDT)", 13, RISK_OPS),
+    ("Market Saturation Level", 13, RISK_OPS),
+
+    ("Auto Flag / Warning", 17, ESPRESSO),
+    ("Sourcing Status", 16, ESPRESSO),
+
+    ("Product Name Finalized?", 13, CHECKLIST),
+    ("SKU Finalized?", 13, CHECKLIST),
+    ("Photos Ready?", 13, CHECKLIST),
+    ("Description Ready?", 13, CHECKLIST),
+    ("Price Approved?", 13, CHECKLIST),
+    ("Ready for Website Upload?", 15, CHECKLIST),
+]
+new_start_idx = helper_start_idx + len(helper_columns)  # AO
+for offset, (name, width, color) in enumerate(new_columns):
+    idx = new_start_idx + offset
+    col_letter = get_column_letter(idx)
+    cell = ws.cell(row=header_row, column=idx, value=name)
+    cell.fill = PatternFill("solid", fgColor=color)
+    cell.font = Font(bold=True, color=WHITE, size=10)
+    cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+    ws.column_dimensions[col_letter].width = width
+
+visible_col_indices = list(range(1, len(columns) + 1)) + list(range(new_start_idx, new_start_idx + len(new_columns)))
+
 ws.row_dimensions[header_row].height = 42
 ws.freeze_panes = "C3"
 
@@ -286,7 +348,29 @@ for r in range(first_data_row, last_data_row + 1):
         f'IF(AC{r}="",0,AC{r})-ROW()*0.0000001,-9999-ROW()*0.0000001)'
     )
 
-    for c in range(1, len(columns) + 1):
+    # ---- Sourcing & operations formulas ----
+    # Total Purchase Cost (AW) = Estimated Landed Cost x Final Approved Quantity
+    ws[f"AW{r}"] = f'=IF(OR(O{r}="",AV{r}=""),"",O{r}*AV{r})'
+    # Auto Flag / Warning (BE): first matching problem wins, in priority order.
+    # ISNUMBER() guards every numeric comparison so a still-blank score/price/MOQ
+    # cell can never be misread as 0 (which would falsely look "too low").
+    ws[f"BE{r}"] = (
+        f'=IF(C{r}="","",'
+        f'IF(AND(ISNUMBER(P{r}),P{r}>MAX_PRICE),"Price too high",'
+        f'IF(AND(ISNUMBER(AB{r}),AB{r}<=2),"Quality risk",'
+        f'IF(AND(ISNUMBER(U{r}),U{r}<=2),"Aesthetic mismatch",'
+        f'IF(AY{r}="High","Too fragile",'
+        f'IF(AND(ISNUMBER(R{r}),R{r}<LOW_PROFIT_PCT),"Low profit",'
+        f'IF(AND(ISNUMBER(AT{r}),AT{r}>MOQ_WARNING),"MOQ too high",'
+        f'IF(OR(AD{r}="Maybe",AD{r}="Price Review"),"Needs partner review",'
+        f'IF(AD{r}="Buy","Good candidate","")))))))))'
+    )
+    # Ready for Website Upload? (BL) -- Yes only once every checklist item is Yes
+    ws[f"BL{r}"] = (
+        f'=IF(C{r}="","",IF(AND(BG{r}="Yes",BH{r}="Yes",BI{r}="Yes",BJ{r}="Yes",BK{r}="Yes"),"Yes","No"))'
+    )
+
+    for c in visible_col_indices:
         ws.cell(row=r, column=c).border = border
         ws.cell(row=r, column=c).alignment = Alignment(vertical="center")
 
@@ -299,12 +383,18 @@ for r in range(first_data_row, last_data_row + 1):
     ws[f"R{r}"].number_format = "0%"
     ws[f"AC{r}"].number_format = "0"
     ws[f"AI{r}"].number_format = "yyyy-mm-dd"
+    for col in ["AO", "AP"]:
+        ws[f"{col}{r}"].number_format = "0.0"
+    for col in ["AQ", "AR", "AT", "AU", "AV"]:
+        ws[f"{col}{r}"].number_format = "#,##0"
+    for col in ["AW", "BC"]:
+        ws[f"{col}{r}"].number_format = '#,##0 "BDT"'
 
 # Light banding fill for readability
 band_fill = PatternFill("solid", fgColor=CREAM)
 for r in range(first_data_row, last_data_row + 1):
     if (r - first_data_row) % 2 == 1:
-        for c in range(1, len(columns) + 1):
+        for c in visible_col_indices:
             ws.cell(row=r, column=c).fill = band_fill
 
 # ---------------- Data validation dropdowns ----------------
@@ -325,6 +415,14 @@ add_dv("LIST_APPROVAL", "AG", "Partner approval status")
 score_cols = ["S", "T", "U", "V", "W", "X", "Y", "Z", "AA", "AB"]
 for col in score_cols:
     add_dv("LIST_SCORE", col, "Score 1 (worst) to 5 (best)")
+
+yesno_cols = ["AS", "BB", "BG", "BH", "BI", "BJ", "BK"]
+for col in yesno_cols:
+    add_dv("LIST_YESNO", col, "Yes or No")
+for col in ["AY", "BA", "BD"]:
+    add_dv("LIST_LEVEL", col, "Low, Medium, or High")
+add_dv("LIST_PACKAGING", "AZ", "Easy, Medium, or Hard")
+add_dv("LIST_SOURCING_STATUS", "BF", "Where this product is in the sourcing pipeline")
 
 # ---------------- Conditional formatting on Decision (AD) ----------------
 rng = f"AD{first_data_row}:AD{last_data_row}"
@@ -368,6 +466,37 @@ ws.conditional_formatting.add(appr_rng, CellIsRule(operator="equal", formula=['"
 ws.conditional_formatting.add(appr_rng, CellIsRule(operator="equal", formula=['"Pending"'],
                      fill=PatternFill("solid", fgColor=YELLOW)))
 
+# Auto Flag / Warning (BE) colors -- green for a clean pass, yellow for a
+# routine partner-review nudge, red for any of the specific risk flags.
+flag_rng = f"BE{first_data_row}:BE{last_data_row}"
+ws.conditional_formatting.add(flag_rng, CellIsRule(operator="equal", formula=['"Good candidate"'],
+                     fill=PatternFill("solid", fgColor=GREEN), font=Font(color=GREEN_FONT, bold=True)))
+ws.conditional_formatting.add(flag_rng, CellIsRule(operator="equal", formula=['"Needs partner review"'],
+                     fill=PatternFill("solid", fgColor=YELLOW), font=Font(color=YELLOW_FONT, bold=True)))
+ws.conditional_formatting.add(
+    flag_rng,
+    FormulaRule(formula=[f'AND(BE{first_data_row}<>"",BE{first_data_row}<>"Good candidate",'
+                          f'BE{first_data_row}<>"Needs partner review")'],
+                fill=PatternFill("solid", fgColor=RED), font=Font(color=RED_FONT, bold=True)))
+
+# Ready for Website Upload (BL) colors
+upload_rng = f"BL{first_data_row}:BL{last_data_row}"
+ws.conditional_formatting.add(upload_rng, CellIsRule(operator="equal", formula=['"Yes"'],
+                     fill=PatternFill("solid", fgColor=GREEN), font=Font(color=GREEN_FONT, bold=True)))
+ws.conditional_formatting.add(upload_rng, CellIsRule(operator="equal", formula=['"No"'],
+                     fill=PatternFill("solid", fgColor=YELLOW)))
+
+# Risk-level colors -- Fragility Level (AY), Courier Risk (BA), Market
+# Saturation Level (BD) all share the same Low/Medium/High scale.
+for col in ["AY", "BA", "BD"]:
+    risk_rng = f"{col}{first_data_row}:{col}{last_data_row}"
+    ws.conditional_formatting.add(risk_rng, CellIsRule(operator="equal", formula=['"High"'],
+                         fill=PatternFill("solid", fgColor=RED), font=Font(color=RED_FONT, bold=True)))
+    ws.conditional_formatting.add(risk_rng, CellIsRule(operator="equal", formula=['"Medium"'],
+                         fill=PatternFill("solid", fgColor=YELLOW)))
+    ws.conditional_formatting.add(risk_rng, CellIsRule(operator="equal", formula=['"Low"'],
+                         fill=PatternFill("solid", fgColor=GREEN)))
+
 # ---------------- Sample example rows (first 5 data rows) ----------------
 # Each row is built to land on a different branch of the Decision formula so
 # partners can see exactly how the hard rejection rules behave.
@@ -379,6 +508,11 @@ sample_buy = {
     "AE": "Strong rose-gold match, trending on TikTok, lightweight and giftable.",
     "AF": "Reel: 'Get Ready With Me' earring swap, 3 looks in 15 sec.",
     "AG": "Approved", "AH": "Nadia", "AI": "2026-06-21",
+    "AO": 4.8, "AP": 4.7, "AQ": 1200, "AR": 340, "AS": "Yes",
+    "AT": 20, "AU": 30, "AV": 50,
+    "AX": "15g, 3 x 4 cm", "AY": "Low", "AZ": "Easy", "BA": "Low", "BB": "No", "BC": 650, "BD": "Low",
+    "BF": "Approved - Not Ordered",
+    "BG": "Yes", "BH": "Yes", "BI": "Yes", "BJ": "Yes", "BK": "Yes",
 }
 sample_maybe_quality_cap = {
     "B": "2026-06-21", "C": "Beaded Choker Necklace", "D": "drive.google.com/sample2",
@@ -388,6 +522,10 @@ sample_maybe_quality_cap = {
     "AE": "Gorgeous and on-trend, but beads chip easily in transit — quality/return risk caps this at Maybe.",
     "AF": "Try-on reel layering 3 chokers.",
     "AG": "Pending",
+    "AO": 4.3, "AP": 4.1, "AQ": 650, "AR": 180, "AS": "Yes",
+    "AT": 30, "AU": 20,
+    "AX": "25g, one size", "AY": "Medium", "AZ": "Medium", "BA": "Medium", "BB": "Yes", "BC": 80, "BD": "Medium",
+    "BF": "Sample Ordered",
 }
 sample_reject_low_score = {
     "B": "2026-06-21", "C": "Plain Plastic Hair Clip", "D": "drive.google.com/sample3",
@@ -397,6 +535,10 @@ sample_reject_low_score = {
     "AE": "Generic look, low trend/demand/aesthetic fit — total score too low to justify stocking.",
     "AF": "",
     "AG": "Rejected",
+    "AO": 3.2, "AP": 3.0, "AQ": 2200, "AR": 90, "AS": "No",
+    "AT": 80,
+    "AX": "5g, 6 cm clip", "AY": "Low", "AZ": "Easy", "BA": "Low", "BB": "Yes", "BC": 15, "BD": "High",
+    "BF": "Not Started",
 }
 sample_price_review = {
     "B": "2026-06-22", "C": "Embroidered Tote Bag", "D": "drive.google.com/sample4",
@@ -406,6 +548,11 @@ sample_price_review = {
     "AE": "Lovely design, but landed cost pushes selling price over 700 — needs supplier price negotiation.",
     "AF": "Flatlay reel with 3 outfit pairings.",
     "AG": "Pending",
+    "AO": 4.5, "AP": 4.2, "AQ": 300, "AR": 75, "AS": "Yes",
+    "AT": 40, "AU": 15,
+    "AX": "320g, 30 x 35 cm", "AY": "Low", "AZ": "Medium", "BA": "Medium", "BB": "No", "BC": 720, "BD": "Low",
+    "BF": "Sourcing",
+    "BG": "Yes", "BH": "Yes",
 }
 sample_hard_reject_price = {
     "B": "2026-06-22", "C": "Designer-Inspired Sunglasses", "D": "drive.google.com/sample5",
@@ -414,6 +561,10 @@ sample_hard_reject_price = {
     "AE": "Cost alone puts this far above our price ceiling even before scoring — auto-rejected.",
     "AF": "",
     "AG": "Rejected",
+    "AO": 3.8, "AP": 3.5, "AQ": 900, "AR": 210, "AS": "No",
+    "AT": 60,
+    "AX": "28g, with case", "AY": "High", "AZ": "Hard", "BA": "High", "BB": "Yes", "BC": 450, "BD": "High",
+    "BF": "Not Started",
 }
 samples = [sample_buy, sample_maybe_quality_cap, sample_reject_low_score,
            sample_price_review, sample_hard_reject_price]
@@ -505,32 +656,60 @@ for i, (label, formula) in enumerate(zip(labels, formulas)):
     ws_dash[f"B{r}"].font = Font(bold=True, size=13, color=ESPRESSO)
     ws_dash[f"B{r}"].alignment = Alignment(horizontal="center")
 
+# ---- Sourcing & Operations ----
+section_title(12, "Sourcing & Operations")
+labels2 = [
+    "Total estimated purchase cost for approved products",
+    "Products ready for website upload",
+    "High-risk products",
+    "Products with high reel/photo potential",
+    "Products approved but not ordered yet",
+    "Products ordered but not arrived yet",
+]
+formulas2 = [
+    f'=SUMIF({PT}!AG{pt_first}:AG{pt_last},"Approved",{PT}!AW{pt_first}:AW{pt_last})',
+    f'=COUNTIF({PT}!BL{pt_first}:BL{pt_last},"Yes")',
+    f'=SUMPRODUCT(--(({PT}!AY{pt_first}:AY{pt_last}="High")+({PT}!BA{pt_first}:BA{pt_last}="High")'
+    f'+(({PT}!AB{pt_first}:AB{pt_last}<>"")*({PT}!AB{pt_first}:AB{pt_last}<=2))>0))',
+    f'=COUNTIF({PT}!X{pt_first}:X{pt_last},">=4")',
+    f'=COUNTIFS({PT}!AG{pt_first}:AG{pt_last},"Approved",{PT}!BF{pt_first}:BF{pt_last},"Approved - Not Ordered")',
+    f'=COUNTIF({PT}!BF{pt_first}:BF{pt_last},"Ordered")+COUNTIF({PT}!BF{pt_first}:BF{pt_last},"In Transit")',
+]
+for i, (label, formula) in enumerate(zip(labels2, formulas2)):
+    r = 13 + i
+    ws_dash[f"A{r}"] = label
+    ws_dash[f"A{r}"].font = label_font
+    ws_dash[f"B{r}"] = formula
+    ws_dash[f"B{r}"].font = Font(bold=True, size=13, color=ESPRESSO)
+    ws_dash[f"B{r}"].alignment = Alignment(horizontal="center")
+ws_dash["B13"].number_format = '#,##0 "BDT"'
+
 # ---- Top 10 highest scoring products ----
-row = 12
+row = 21
 section_title(row, "Top 10 Highest Scoring Products")
 table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
 add_topn_table(row + 2, "AJ", 10)
 
 # ---- Best products under BDT 700 ----
-row = 24
+row = 33
 section_title(row, "Best Products Under BDT 700")
 table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
 add_topn_table(row + 2, "AK", 5)
 
 # ---- Best products for reels/photos ----
-row = 31
+row = 40
 section_title(row, "Best Products for Reels/Photos")
 table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
 add_topn_table(row + 2, "AL", 5)
 
 # ---- Best giftable products ----
-row = 38
+row = 47
 section_title(row, "Best Giftable Products")
 table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
 add_topn_table(row + 2, "AM", 5)
 
 # ---- Products needing partner review ----
-row = 45
+row = 54
 section_title(row, "Products Needing Partner Review (Maybe / Price Review, not yet decided)")
 table_header(row + 1, ["Rank", "Product Name", "SKU", "Score", "Decision", "Suggested Price"])
 add_topn_table(row + 2, "AN", 15)
@@ -660,13 +839,37 @@ rows_help = [
         "Buy = green, Maybe = yellow, Price Review = orange, Reject = red."),
     ("Step 6 — Decide together", "Add a short Reason so the other partners know WHY. Add a Content/Reel Idea so "
         "marketing has a head start. Set Approval Status once all partners agree, note who Approved and the date."),
-    ("Adjusting the formulas", "Don't like the default markup, exchange rate, price ceilings, or scoring weights? "
-        "Change them ONCE in the Settings tab — every row updates automatically. No need to touch the Product "
-        "Tracker formulas."),
-    ("The Dashboard tab", "A live, read-only overview: how many products are Buy/Maybe/Price Review/Reject, the "
-        "Top 10 highest scoring products, the best products under BDT 700, the best products for reels/photos, "
-        "the best giftable products, and everything still waiting on partner review. Nothing on this tab needs "
-        "to be filled in by hand — it reads straight from the Product Tracker tab."),
+    ("Step 7 — Sourcing & operations columns", "Once a product looks promising, fill in the sourcing/operations "
+        "columns (after the scoring columns): Supplier Rating, Product Rating, Sold Count/Order Count, Review "
+        "Count, and Real Review Photos? help you judge if a supplier is trustworthy. MOQ, Recommended Test "
+        "Quantity, and Final Approved Quantity track how many units to order; Total Purchase Cost calculates "
+        "itself (Estimated Landed Cost x Final Approved Quantity) once both are filled in. Weight/Size, "
+        "Fragility Level, Packaging Difficulty, and Courier Risk flag shipping problems before you commit. "
+        "Duplicate Found on BD Market?, Competitor Price, and Market Saturation Level help you judge if it's "
+        "already oversaturated locally."),
+    ("Auto Flag / Warning", "Calculates itself and shows the single biggest problem with a product, in priority "
+        "order: 'Price too high' (over the price ceiling), 'Quality risk' (Quality/Risk score 1-2), 'Aesthetic "
+        "mismatch' (Aesthetic Fit score 1-2), 'Too fragile' (Fragility Level = High), 'Low profit' (margin below "
+        "the Settings threshold), 'MOQ too high' (above the Settings threshold), 'Needs partner review' (still "
+        "Maybe/Price Review), or 'Good candidate' (a clean Buy with no problems). Use it as a quick at-a-glance "
+        "warning, not a replacement for reading the Reason column."),
+    ("Website-readiness checklist", "Product Name Finalized?, SKU Finalized?, Photos Ready?, Description Ready?, "
+        "and Price Approved? are simple Yes/No checkboxes for whoever preps the listing. Ready for Website "
+        "Upload? calculates itself: it only shows 'Yes' once ALL FIVE of those checklist columns say 'Yes'."),
+    ("Sourcing Status", "Track where a product physically is in the pipeline: Not Started, Sourcing, Sample "
+        "Ordered, Sample Received, Approved - Not Ordered, Ordered, In Transit, Arrived, or Live on Website. "
+        "This is separate from Decision/Approval Status — a product can be Approved but still waiting on an "
+        "order, or Ordered while the website checklist is still in progress."),
+    ("Adjusting the formulas", "Don't like the default markup, exchange rate, price ceilings, scoring weights, "
+        "low profit margin warning, or MOQ warning threshold? Change them ONCE in the Settings tab — every row "
+        "updates automatically. No need to touch the Product Tracker formulas."),
+    ("The Dashboard tab", "A live, read-only overview: how many products are Buy/Maybe/Price Review/Reject; "
+        "total estimated purchase cost for approved products, products ready for website upload, high-risk "
+        "products, products with high reel/photo potential, products approved but not ordered yet, and products "
+        "ordered but not arrived yet; the Top 10 highest scoring products, the best products under BDT 700, the "
+        "best products for reels/photos, the best giftable products, and everything still waiting on partner "
+        "review. Nothing on this tab needs to be filled in by hand — it reads straight from the Product Tracker "
+        "tab."),
     ("The Claude Scoring Prompt tab", "A ready-to-copy prompt for getting an AI first opinion on a product's 10 "
         "scores, a recommended decision, and a content/reel idea, formatted so the reply is easy to paste back "
         "into the right columns."),
