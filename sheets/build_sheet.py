@@ -705,6 +705,7 @@ for sample, row in zip(samples, range(first_data_row, first_data_row + len(sampl
 # =====================================================================
 ws_dash = wb.create_sheet("Dashboard")
 ws_dash.sheet_properties.tabColor = SAGE
+ws_dash.sheet_view.showGridLines = False
 
 PT = "'Product Tracker'"
 pt_first, pt_last = first_data_row, last_data_row
@@ -712,11 +713,22 @@ pt_first, pt_last = first_data_row, last_data_row
 for col, width in zip("ABCDEF", [6, 30, 12, 12, 14, 16]):
     ws_dash.column_dimensions[col].width = width
 
+gold_thin = Side(style="thin", color=ANTIQUE_GOLD)
+card_border = Border(left=gold_thin, right=gold_thin, top=gold_thin, bottom=gold_thin)
+header_bottom_border = Border(bottom=Side(style="medium", color=ANTIQUE_GOLD))
+
+ws_dash.row_dimensions[1].height = 30
+ws_dash.row_dimensions[2].height = 18
+for c in "ABCDEF":
+    ws_dash[f"{c}1"].fill = PatternFill("solid", fgColor=DUSTY_ROSE)
+    ws_dash[f"{c}2"].fill = PatternFill("solid", fgColor=CREAM)
 ws_dash["A1"] = "AAYNA Product Scout Lite — Dashboard"
-ws_dash["A1"].font = Font(bold=True, size=14, color=ESPRESSO)
+ws_dash["A1"].font = Font(bold=True, size=16, color=WHITE)
+ws_dash["A1"].alignment = Alignment(vertical="center", indent=1)
 ws_dash.merge_cells("A1:F1")
 ws_dash["A2"] = "Live view of the Product Tracker tab. Nothing here is editable — everything updates automatically."
-ws_dash["A2"].font = note_font
+ws_dash["A2"].font = Font(italic=True, color=MAUVE, size=9)
+ws_dash["A2"].alignment = Alignment(vertical="center", indent=1)
 ws_dash.merge_cells("A2:F2")
 
 
@@ -725,16 +737,46 @@ def section_title(row, text, span="A:F"):
     cell.value = text
     cell.font = Font(bold=True, size=12, color=WHITE)
     cell.fill = PatternFill("solid", fgColor=DUSTY_ROSE)
+    cell.alignment = Alignment(vertical="center", indent=1)
     first_col, last_col = span.split(":")
+    for c in "ABCDEF":
+        if first_col <= c <= last_col:
+            ws_dash[f"{c}{row}"].fill = PatternFill("solid", fgColor=DUSTY_ROSE)
     ws_dash.merge_cells(f"{first_col}{row}:{last_col}{row}")
+    ws_dash.row_dimensions[row].height = 22
 
 
 def table_header(row, labels):
     for i, label in enumerate(labels):
         cell = ws_dash.cell(row=row, column=i + 1, value=label)
-        cell.font = Font(bold=True, color=ESPRESSO)
+        cell.font = Font(bold=True, color=ESPRESSO, size=10)
         cell.fill = PatternFill("solid", fgColor=DUSTY_ROSE_LIGHT)
-        cell.alignment = Alignment(horizontal="center")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = header_bottom_border
+    ws_dash.row_dimensions[row].height = 20
+
+
+def kpi_row(r, label, formula, value_font=None, number_format=None, zebra_index=0):
+    """One KPI as a card-style row: label spans A:C, big value spans D:F,
+    framed in a thin gold border with alternating tint for readability."""
+    ws_dash.merge_cells(f"A{r}:C{r}")
+    ws_dash.merge_cells(f"D{r}:F{r}")
+    label_cell = ws_dash[f"A{r}"]
+    label_cell.value = label
+    label_cell.font = Font(color=ESPRESSO, size=11)
+    label_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1, wrap_text=True)
+    value_cell = ws_dash[f"D{r}"]
+    value_cell.value = formula
+    value_cell.font = value_font or Font(bold=True, size=14, color=ESPRESSO)
+    value_cell.alignment = Alignment(horizontal="center", vertical="center")
+    if number_format:
+        value_cell.number_format = number_format
+    fill = PatternFill("solid", fgColor=CREAM if zebra_index % 2 == 0 else WHITE)
+    for c in "ABCDEF":
+        cell = ws_dash[f"{c}{r}"]
+        cell.fill = fill
+        cell.border = card_border
+    ws_dash.row_dimensions[r].height = 24
 
 
 def add_topn_table(start_row, key_col, n):
@@ -742,6 +784,7 @@ def add_topn_table(start_row, key_col, n):
     hidden rank-key column. Works in Excel/LibreOffice/Sheets alike (no
     QUERY/FILTER/SORT dynamic arrays needed)."""
     key_rng = f"{PT}!${key_col}${pt_first}:${key_col}${pt_last}"
+    band_fill = PatternFill("solid", fgColor=CREAM)
     for i in range(n):
         row = start_row + i
         key = f"LARGE({key_rng},{i + 1})"
@@ -761,9 +804,22 @@ def add_topn_table(start_row, key_col, n):
         for c in range(1, 7):
             cell = ws_dash.cell(row=row, column=c)
             cell.border = border
-            cell.alignment = Alignment(horizontal="center" if c in (1, 4, 5) else "left")
+            cell.alignment = Alignment(horizontal="center" if c in (1, 4, 5) else "left", vertical="center")
+            if i % 2 == 1:
+                cell.fill = band_fill
         ws_dash.cell(row=row, column=4).number_format = "0"
         ws_dash.cell(row=row, column=6).number_format = '#,##0 "BDT"'
+        ws_dash.row_dimensions[row].height = 18
+    # Decision column (5) color-coded the same way as the Product Tracker
+    dec_rng = f"E{start_row}:E{start_row + n - 1}"
+    ws_dash.conditional_formatting.add(dec_rng, CellIsRule(operator="equal", formula=['"Buy"'],
+                         font=Font(color=GREEN_FONT, bold=True)))
+    ws_dash.conditional_formatting.add(dec_rng, CellIsRule(operator="equal", formula=['"Maybe"'],
+                         font=Font(color=YELLOW_FONT, bold=True)))
+    ws_dash.conditional_formatting.add(dec_rng, CellIsRule(operator="equal", formula=['"Price Review"'],
+                         font=Font(color=ORANGE_FONT, bold=True)))
+    ws_dash.conditional_formatting.add(dec_rng, CellIsRule(operator="equal", formula=['"Reject"'],
+                         font=Font(color=RED_FONT, bold=True)))
 
 
 # ---- Summary counts ----
@@ -776,13 +832,15 @@ formulas = [
     f'=COUNTIF({PT}!AD{pt_first}:AD{pt_last},"Price Review")',
     f'=COUNTIF({PT}!AD{pt_first}:AD{pt_last},"Reject")',
 ]
-for i, (label, formula) in enumerate(zip(labels, formulas)):
-    r = 5 + i
-    ws_dash[f"A{r}"] = label
-    ws_dash[f"A{r}"].font = label_font
-    ws_dash[f"B{r}"] = formula
-    ws_dash[f"B{r}"].font = Font(bold=True, size=13, color=ESPRESSO)
-    ws_dash[f"B{r}"].alignment = Alignment(horizontal="center")
+value_fonts = [
+    Font(bold=True, size=16, color=ESPRESSO),
+    Font(bold=True, size=14, color=GREEN_FONT),
+    Font(bold=True, size=14, color=YELLOW_FONT),
+    Font(bold=True, size=14, color=ORANGE_FONT),
+    Font(bold=True, size=14, color=RED_FONT),
+]
+for i, (label, formula, vfont) in enumerate(zip(labels, formulas, value_fonts)):
+    kpi_row(5 + i, label, formula, value_font=vfont, zebra_index=i)
 
 # ---- Sourcing & Operations ----
 section_title(12, "Sourcing & Operations")
@@ -803,14 +861,17 @@ formulas2 = [
     f'=COUNTIFS({PT}!AG{pt_first}:AG{pt_last},"Approved",{PT}!BF{pt_first}:BF{pt_last},"Approved - Not Ordered")',
     f'=COUNTIF({PT}!BF{pt_first}:BF{pt_last},"Ordered")+COUNTIF({PT}!BF{pt_first}:BF{pt_last},"In Transit")',
 ]
-for i, (label, formula) in enumerate(zip(labels2, formulas2)):
-    r = 13 + i
-    ws_dash[f"A{r}"] = label
-    ws_dash[f"A{r}"].font = label_font
-    ws_dash[f"B{r}"] = formula
-    ws_dash[f"B{r}"].font = Font(bold=True, size=13, color=ESPRESSO)
-    ws_dash[f"B{r}"].alignment = Alignment(horizontal="center")
-ws_dash["B13"].number_format = '#,##0 "BDT"'
+value_fonts2 = [
+    Font(bold=True, size=14, color=ESPRESSO),
+    Font(bold=True, size=14, color=GREEN_FONT),
+    Font(bold=True, size=14, color=RED_FONT),
+    Font(bold=True, size=14, color=MAUVE),
+    Font(bold=True, size=14, color=YELLOW_FONT),
+    Font(bold=True, size=14, color=ORANGE_FONT),
+]
+number_formats2 = ['#,##0 "BDT"', None, None, None, None, None]
+for i, (label, formula, vfont, nf) in enumerate(zip(labels2, formulas2, value_fonts2, number_formats2)):
+    kpi_row(13 + i, label, formula, value_font=vfont, number_format=nf, zebra_index=i)
 
 # ---- Monthly Budget ----
 section_title(21, "Monthly Budget")
@@ -823,22 +884,27 @@ labels3 = [
 ]
 formulas3 = [
     f'=SUMIF({PT}!AG{pt_first}:AG{pt_last},"Approved",{PT}!AW{pt_first}:AW{pt_last})',
-    "=MONTHLY_BUDGET-B22",
-    '=IF(MONTHLY_BUDGET=0,"",B22/MONTHLY_BUDGET)',
+    "=MONTHLY_BUDGET-D22",
+    '=IF(MONTHLY_BUDGET=0,"",D22/MONTHLY_BUDGET)',
     f'=SUMIF({PT}!AG{pt_first}:AG{pt_last},"Approved",{PT}!AV{pt_first}:AV{pt_last})',
     f'=COUNTIF({PT}!AG{pt_first}:AG{pt_last},"Approved")',
 ]
-for i, (label, formula) in enumerate(zip(labels3, formulas3)):
-    r = 22 + i
-    ws_dash[f"A{r}"] = label
-    ws_dash[f"A{r}"].font = label_font
-    ws_dash[f"B{r}"] = formula
-    ws_dash[f"B{r}"].font = Font(bold=True, size=13, color=ESPRESSO)
-    ws_dash[f"B{r}"].alignment = Alignment(horizontal="center")
-ws_dash["B22"].number_format = '#,##0 "BDT"'
-ws_dash["B23"].number_format = '#,##0 "BDT"'
-ws_dash["B24"].number_format = "0%"
-ws_dash["B25"].number_format = "#,##0"
+number_formats3 = ['#,##0 "BDT"', '#,##0 "BDT"', "0%", "#,##0", "#,##0"]
+for i, (label, formula, nf) in enumerate(zip(labels3, formulas3, number_formats3)):
+    kpi_row(22 + i, label, formula, number_format=nf, zebra_index=i)
+
+# Remaining Budget (D23): red if over budget, green if healthy
+ws_dash.conditional_formatting.add("D23", CellIsRule(operator="lessThan", formula=["0"],
+                     fill=PatternFill("solid", fgColor=RED), font=Font(color=RED_FONT, bold=True, size=14)))
+ws_dash.conditional_formatting.add("D23", CellIsRule(operator="greaterThanOrEqual", formula=["0"],
+                     font=Font(color=GREEN_FONT, bold=True, size=14)))
+# Budget Used % (D24): traffic-light thresholds
+ws_dash.conditional_formatting.add("D24", CellIsRule(operator="greaterThanOrEqual", formula=["1"],
+                     fill=PatternFill("solid", fgColor=RED), font=Font(color=RED_FONT, bold=True, size=14)))
+ws_dash.conditional_formatting.add("D24", CellIsRule(operator="greaterThanOrEqual", formula=["0.8"],
+                     fill=PatternFill("solid", fgColor=ORANGE), font=Font(color=ORANGE_FONT, bold=True, size=14)))
+ws_dash.conditional_formatting.add("D24", CellIsRule(operator="lessThan", formula=["0.8"],
+                     fill=PatternFill("solid", fgColor=GREEN), font=Font(color=GREEN_FONT, bold=True, size=14)))
 
 # ---- Top 10 highest scoring products ----
 row = 29
