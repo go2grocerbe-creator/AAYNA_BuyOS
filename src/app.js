@@ -1,4 +1,8 @@
 const TODAY = new Date().toISOString().slice(0, 10);
+const APP_SCHEMA_VERSION = 3;
+const PRODUCTS_STORAGE_KEY = "aaynaProducts";
+const SETTINGS_STORAGE_KEY = "aaynaSettings";
+const BACKUP_APP_MARKER = "AAYNABuyOS";
 
 const DEFAULT_SETTINGS = {
   usdRate: 122,
@@ -43,6 +47,29 @@ const DROPDOWNS = {
   aiTool: ["", "Claude", "ChatGPT", "Gemini", "Other"]
 };
 
+const LAUNCH_STATUSES = [
+  ["shortlisted", "Shortlisted"],
+  ["sample_order", "Sample order"],
+  ["ordered", "Ordered"],
+  ["received", "Received"],
+  ["photo_ready", "Photo ready"],
+  ["website_ready", "Website ready"],
+  ["live", "Live"],
+  ["paused", "Paused"]
+];
+
+const LAUNCH_CHECKLIST = [
+  ["productNameReady", "Product name"],
+  ["descriptionReady", "Description"],
+  ["priceConfirmed", "Price confirmed"],
+  ["imagesReady", "Images"],
+  ["stockConfirmed", "Stock confirmed"],
+  ["websiteExportReady", "Website export"],
+  ["instagramContentPlanned", "Instagram content"]
+];
+
+const DEFAULT_LAUNCH_CHECKLIST = Object.fromEntries(LAUNCH_CHECKLIST.map(([key]) => [key, false]));
+
 const CATEGORY_PREFIX = {
   Earrings: "EAR",
   Necklace: "NEC",
@@ -82,13 +109,15 @@ const FIELD_DEFAULTS = {
   descriptionReady: "No",
   priceApproved: "No",
   qcStatus: "Not Arrived",
-  manualScoreAdjusted: "No"
+  manualScoreAdjusted: "No",
+  launchStatus: "",
+  launchChecklist: { ...DEFAULT_LAUNCH_CHECKLIST }
 };
 
 const FORM_FIELDS = [
   "sku", "dateAdded", "productName", "productImageLink", "category", "sourcePlatform", "sourceUrl",
   "supplierName", "unitCost", "sourceCurrency", "shippingCostBdt", "customsDutyPct", "miscFeesBdt",
-  "reason", "contentIdea", "approvalStatus", "approvedBy", "dateDecided", "supplierRating",
+  "reason", "contentIdea", "approvalStatus", "approvedBy", "dateDecided", "approvalOverrideReason", "supplierRating",
   "productRating", "soldCount", "reviewCount", "realReviewPhotos", "moq", "recommendedTestQuantity",
   "finalApprovedQuantity", "weightSize", "fragilityLevel", "packagingDifficulty", "courierRisk",
   "duplicateFound", "competitorPrice", "marketSaturationLevel", "sourcingStatus", "productNameFinalized",
@@ -339,21 +368,40 @@ const formMessage = document.querySelector("#formMessage");
 
 function loadProducts() {
   try {
-    return JSON.parse(localStorage.getItem("aaynaProducts") || "[]").map(normalizeProduct);
+    const raw = localStorage.getItem(PRODUCTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const rawProducts = Array.isArray(parsed) ? parsed : parsed.products;
+    if (!Array.isArray(rawProducts)) return [];
+    const normalized = rawProducts.map(normalizeProduct);
+    const needsMigration = Array.isArray(parsed)
+      || parsed.schemaVersion !== APP_SCHEMA_VERSION
+      || JSON.stringify(rawProducts) !== JSON.stringify(normalized);
+    if (needsMigration) saveProducts(normalized);
+    return normalized;
   } catch {
     return [];
   }
 }
 
-function saveProducts() {
-  localStorage.setItem("aaynaProducts", JSON.stringify(products));
+function saveProducts(nextProducts = products) {
+  localStorage.setItem(PRODUCTS_STORAGE_KEY, JSON.stringify({
+    app: BACKUP_APP_MARKER,
+    schemaVersion: APP_SCHEMA_VERSION,
+    savedAt: new Date().toISOString(),
+    products: nextProducts.map(normalizeProduct)
+  }));
 }
 
 function loadSettings() {
   try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_SETTINGS };
+    const parsed = JSON.parse(raw);
+    const loadedSettings = parsed.settings || parsed;
     return {
       ...DEFAULT_SETTINGS,
-      ...JSON.parse(localStorage.getItem("aaynaSettings") || "{}")
+      ...loadedSettings
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -361,7 +409,12 @@ function loadSettings() {
 }
 
 function saveSettings() {
-  localStorage.setItem("aaynaSettings", JSON.stringify(settings));
+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({
+    app: BACKUP_APP_MARKER,
+    schemaVersion: APP_SCHEMA_VERSION,
+    savedAt: new Date().toISOString(),
+    settings
+  }));
 }
 
 function normalizeProduct(product) {
@@ -373,6 +426,11 @@ function normalizeProduct(product) {
   normalized.shippingCostBdt = product.shippingCostBdt ?? product.shippingCost ?? 0;
   normalized.approvalStatus = product.approvalStatus || statusToApproval(product.status);
   normalized.sourcingStatus = product.sourcingStatus || "Not Started";
+  normalized.launchStatus = normalized.approvalStatus === "Approved" ? (product.launchStatus || "shortlisted") : "";
+  normalized.launchChecklist = {
+    ...DEFAULT_LAUNCH_CHECKLIST,
+    ...(product.launchChecklist || {})
+  };
   normalized.scores = {};
   SCORE_FIELDS.forEach(([key]) => {
     const existing = product.scores?.[key];
@@ -445,6 +503,10 @@ function toNumber(value, fallback = 0) {
   return value === "" || value === null || value === undefined ? fallback : Number(value);
 }
 
+function hasValue(value) {
+  return value !== "" && value !== null && value !== undefined;
+}
+
 function clampScore(value) {
   return Math.max(1, Math.min(5, Number(value || 3)));
 }
@@ -463,6 +525,35 @@ function percent(value) {
 
 function moneyOrDash(value) {
   return value === "" || value === null || value === undefined ? "-" : money(value);
+}
+
+function positiveWholeNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.floor(number);
+}
+
+function getPublicStockQuantity(product) {
+  const costs = product.costs || calculateCosts(product);
+  const candidates = [
+    costs.finalStockAccepted,
+    product.finalAcceptedStock,
+    product.acceptedStock,
+    product.receivedQuantity,
+    product.quantityReceived,
+    product.orderQuantity,
+    product.finalApprovedQuantity,
+    product.stockQuantity
+  ];
+  for (const candidate of candidates) {
+    const stock = positiveWholeNumber(candidate);
+    if (stock > 0) return stock;
+  }
+  return 0;
+}
+
+function hasMissingPublicStock(product) {
+  return getPublicStockQuantity(product) <= 0;
 }
 
 function roundToWorkbookPrice(value) {
@@ -493,7 +584,7 @@ function calculateCosts(product) {
       actualLandedCost: "",
       actualProfit: "",
       actualProfitMargin: "",
-      finalStockAccepted: product.quantityReceived !== "" && product.defectCount !== ""
+      finalStockAccepted: hasValue(product.quantityReceived) && hasValue(product.defectCount)
         ? Math.max(0, toNumber(product.quantityReceived) - toNumber(product.defectCount))
         : ""
     };
@@ -512,16 +603,16 @@ function calculateCosts(product) {
   const profitMargin = suggestedSellingPrice > 0 ? expectedProfit / suggestedSellingPrice : 0;
   const finalApprovedQuantity = Math.max(0, toNumber(product.finalApprovedQuantity));
   const totalPurchaseCost = estimatedLandedCost * finalApprovedQuantity;
-  const actualLandedCost = product.actualProductCost !== "" && product.actualShippingCost !== ""
+  const actualLandedCost = hasValue(product.actualProductCost) && hasValue(product.actualShippingCost)
     ? toNumber(product.actualProductCost) + toNumber(product.actualShippingCost)
     : "";
-  const actualProfit = product.actualSellingPrice !== "" && actualLandedCost !== ""
+  const actualProfit = hasValue(product.actualSellingPrice) && actualLandedCost !== ""
     ? toNumber(product.actualSellingPrice) - actualLandedCost
     : "";
-  const actualProfitMargin = product.actualSellingPrice !== "" && toNumber(product.actualSellingPrice) > 0 && actualProfit !== ""
+  const actualProfitMargin = hasValue(product.actualSellingPrice) && toNumber(product.actualSellingPrice) > 0 && actualProfit !== ""
     ? actualProfit / toNumber(product.actualSellingPrice)
     : "";
-  const finalStockAccepted = product.quantityReceived !== "" && product.defectCount !== ""
+  const finalStockAccepted = hasValue(product.quantityReceived) && hasValue(product.defectCount)
     ? Math.max(0, toNumber(product.quantityReceived) - toNumber(product.defectCount))
     : "";
 
@@ -565,9 +656,60 @@ function calculateDecision(product) {
   return "Reject";
 }
 
+function decisionReason(product) {
+  const costs = calculateCosts(product);
+  const score = calculateScore(product);
+  const qualityRisk = clampScore(product.scores?.qualityRisk);
+  const aesthetic = clampScore(product.scores?.aaynaFit);
+
+  if (!costs.hasCostData) return "Missing unit cost, so pricing cannot be evaluated.";
+  if (costs.suggestedSellingPrice > settings.hardRejectPrice) {
+    return `Suggested selling price is above the hard reject limit of ${money(settings.hardRejectPrice)}.`;
+  }
+  if (costs.suggestedSellingPrice > settings.targetMaxPrice) {
+    return `Suggested selling price is above the target max price of ${money(settings.targetMaxPrice)}.`;
+  }
+  if (qualityRisk <= 2) return "Quality/risk score is too low for a Buy decision.";
+  if (aesthetic <= 2) return "AAYNA aesthetic fit score is too low for a Buy decision.";
+  if (score < MAYBE_THRESHOLD) return `Total score is below the Maybe threshold of ${MAYBE_THRESHOLD}.`;
+  if (score < BUY_THRESHOLD) return `Total score is between ${MAYBE_THRESHOLD} and ${BUY_THRESHOLD - 1}, so partner review is recommended.`;
+  if (costs.profitMargin !== "" && costs.profitMargin < settings.lowProfitThreshold / 100) {
+    return `Profit margin is below the low-profit threshold of ${settings.lowProfitThreshold}%.`;
+  }
+  if (toNumber(product.moq) > settings.moqWarningThreshold) {
+    return `MOQ is above the warning threshold of ${settings.moqWarningThreshold}.`;
+  }
+  return "Good candidate based on score, price, quality, and aesthetic fit.";
+}
+
 function readyForWebsiteUpload(product) {
   return ["productNameFinalized", "skuFinalized", "photosReady", "descriptionReady", "priceApproved"]
     .every((key) => product[key] === "Yes");
+}
+
+function isWebsiteExportReady(product) {
+  return readyForWebsiteUpload(product)
+    || product.launchStatus === "website_ready"
+    || product.launchStatus === "live"
+    || Boolean(product.launchChecklist?.websiteExportReady);
+}
+
+function isApproved(product) {
+  return product.approvalStatus === "Approved";
+}
+
+function launchChecklistProgress(product) {
+  const checklist = product.launchChecklist || DEFAULT_LAUNCH_CHECKLIST;
+  const ready = LAUNCH_CHECKLIST.filter(([key]) => Boolean(checklist[key])).length;
+  const missing = LAUNCH_CHECKLIST
+    .filter(([key]) => !checklist[key])
+    .map(([, label]) => label);
+  if (hasMissingPublicStock(product)) missing.push("Stock quantity");
+  return {
+    ready,
+    total: LAUNCH_CHECKLIST.length,
+    missing
+  };
 }
 
 function isHighRisk(product) {
@@ -598,10 +740,12 @@ function productWithComputed(product, index = 0) {
   return {
     ...product,
     sku,
+    enteredSku: product.sku || "",
     costs,
     score,
     decision,
-    readyForWebsiteUpload: readyForWebsiteUpload(product),
+    decisionReason: decisionReason(product),
+    readyForWebsiteUpload: isWebsiteExportReady(product),
     highRisk: isHighRisk(product),
     autoFlag: autoFlag(product)
   };
@@ -663,11 +807,57 @@ function validateProduct(product) {
   if (!product.productName) errors.push("Product name is required.");
   if (!product.category) errors.push("Category is required.");
   if (!product.sourcePlatform) errors.push("Source platform is required.");
+  if (!product.sourceUrl) errors.push("Supplier/source URL is required.");
+  if (product.sourceUrl && !isValidHttpUrl(product.sourceUrl)) errors.push("Supplier/source URL must start with http:// or https://.");
+  if (product.productImageLink && !isValidHttpUrl(product.productImageLink)) errors.push("Product image/link must start with http:// or https:// when provided.");
   if (product.unitCost === "" || product.unitCost === null || product.unitCost === undefined) {
     errors.push("Unit cost is required.");
   }
-  if (Number(product.unitCost) < 0) errors.push("Unit cost cannot be negative.");
+  if (Number(product.unitCost) <= 0) errors.push("Unit cost must be greater than 0.");
+  if (toNumber(product.shippingCostBdt) < 0) errors.push("Shipping cost cannot be negative.");
+  if (hasValue(product.customsDutyPct) && (Number(product.customsDutyPct) < 0 || Number(product.customsDutyPct) > 100)) {
+    errors.push("Customs/duty % must be between 0 and 100.");
+  }
+  if (hasValue(product.miscFeesBdt) && Number(product.miscFeesBdt) < 0) errors.push("Misc fees cannot be negative.");
+  if (!Number.isInteger(Number(product.moq)) || Number(product.moq) < 1) errors.push("MOQ must be a whole number of at least 1.");
+  ["recommendedTestQuantity", "finalApprovedQuantity", "soldCount", "reviewCount", "quantityReceived", "defectCount"].forEach((field) => {
+    if (hasValue(product[field]) && (!Number.isInteger(Number(product[field])) || Number(product[field]) < 0)) {
+      errors.push(`${humanizeField(field)} must be a non-negative whole number.`);
+    }
+  });
+  ["supplierRating", "productRating"].forEach((field) => {
+    if (hasValue(product[field]) && (Number(product[field]) < 0 || Number(product[field]) > 5)) {
+      errors.push(`${humanizeField(field)} must be between 0 and 5.`);
+    }
+  });
+  ["actualProductCost", "actualShippingCost", "actualSellingPrice", "competitorPrice"].forEach((field) => {
+    if (hasValue(product[field]) && Number(product[field]) < 0) errors.push(`${humanizeField(field)} cannot be negative.`);
+  });
+  if (hasValue(product.quantityReceived) && hasValue(product.defectCount) && Number(product.defectCount) > Number(product.quantityReceived)) {
+    errors.push("Defect count cannot exceed quantity received.");
+  }
+  SCORE_FIELDS.forEach(([key, label]) => {
+    const value = Number(product.scores?.[key]);
+    if (!Number.isInteger(value) || value < 1 || value > 5) errors.push(`${label} score must be a whole number from 1 to 5.`);
+  });
+  const computedDecision = calculateDecision(product);
+  if (product.approvalStatus === "Approved" && computedDecision === "Reject" && !product.approvalOverrideReason) {
+    errors.push("Approval override reason is required before approving a product with a Reject decision.");
+  }
   return errors;
+}
+
+function isValidHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function humanizeField(field) {
+  return field.replace(/([A-Z])/g, " $1").replace(/^./, (char) => char.toUpperCase());
 }
 
 function resetForm() {
@@ -730,7 +920,7 @@ function renderSettings() {
 
 function renderStats() {
   const computed = products.map(productWithComputed);
-  const approved = computed.filter((product) => product.approvalStatus === "Approved");
+  const approved = computed.filter(isApproved);
   const approvedCost = approved.reduce((sum, product) => sum + toNumber(product.costs.totalPurchaseCost), 0);
   const remaining = settings.monthlyBudget - approvedCost;
   const used = settings.monthlyBudget > 0 ? approvedCost / settings.monthlyBudget : 0;
@@ -745,7 +935,11 @@ function renderStats() {
     ["Budget used", percent(used)],
     ["Website ready", computed.filter((product) => product.readyForWebsiteUpload).length],
     ["High-risk products", computed.filter((product) => product.highRisk).length],
-    ["Partner review", computed.filter(needsPartnerReview).length]
+    ["Partner review", computed.filter(needsPartnerReview).length],
+    ["Launch batch", approved.filter((product) => product.launchStatus).length],
+    ["Launch website ready", computed.filter((product) => product.launchStatus === "website_ready" || product.launchStatus === "live").length],
+    ["Live", computed.filter((product) => product.launchStatus === "live").length],
+    ["Photo/content pending", approved.filter((product) => !product.launchChecklist?.imagesReady || !product.launchChecklist?.instagramContentPlanned).length]
   ];
 
   document.querySelector("#statsGrid").innerHTML = stats.map(([label, value]) => `
@@ -841,7 +1035,7 @@ function renderProductList() {
     <article class="product-card">
       ${isRenderableImage(product.productImageLink)
         ? `<img class="product-image" src="${escapeAttribute(product.productImageLink)}" alt="${escapeAttribute(product.productName)}" />`
-        : `<div class="product-image placeholder" aria-hidden="true">A</div>`}
+        : `<div class="product-image placeholder" aria-hidden="true"><strong>AAYNA</strong><span>Image pending</span></div>`}
       <div>
         <div class="product-head">
           <div>
@@ -857,35 +1051,100 @@ function renderProductList() {
         </div>
         <div class="product-meta">
           ${product.costs.hasCostData
-            ? `<span class="pill">${money(product.costs.suggestedSellingPrice)} selling</span>
-              <span class="pill">${money(product.costs.estimatedLandedCost)} landed</span>
-              <span class="pill">${percent(product.costs.profitMargin)} margin</span>
-              <span class="pill">${money(product.costs.totalPurchaseCost)} purchase</span>`
+            ? `<span class="metric-pill"><span>Selling</span><strong>${money(product.costs.suggestedSellingPrice)}</strong></span>
+              <span class="metric-pill"><span>Landed</span><strong>${money(product.costs.estimatedLandedCost)}</strong></span>
+              <span class="metric-pill"><span>Margin</span><strong>${percent(product.costs.profitMargin)}</strong></span>
+              <span class="metric-pill"><span>Purchase</span><strong>${money(product.costs.totalPurchaseCost)}</strong></span>`
             : '<span class="pill reject">Incomplete cost data</span>'}
-          <span class="pill">MOQ ${toNumber(product.moq)}</span>
+          <span class="metric-pill"><span>MOQ</span><strong>${toNumber(product.moq)}</strong></span>
           ${product.autoFlag ? `<span class="pill ${product.highRisk ? "reject" : "maybe"}">${escapeHtml(product.autoFlag)}</span>` : ""}
         </div>
         <div class="product-details">
           <div class="detail"><span>Supplier</span><strong>${escapeHtml(product.supplierName || "-")}</strong></div>
-          <div class="detail"><span>Sold / Reviews</span><strong>${toNumber(product.soldCount).toLocaleString()} / ${toNumber(product.reviewCount).toLocaleString()}</strong></div>
+          <div class="detail"><span>Sold</span><strong>${toNumber(product.soldCount).toLocaleString()}</strong></div>
+          <div class="detail"><span>Reviews</span><strong>${toNumber(product.reviewCount).toLocaleString()}</strong></div>
           <div class="detail"><span>Risk</span><strong>${escapeHtml(product.fragilityLevel)} / ${escapeHtml(product.courierRisk)}</strong></div>
-          <div class="detail"><span>QC accepted</span><strong>${product.costs.finalStockAccepted === "" ? "-" : product.costs.finalStockAccepted}</strong></div>
+          <div class="detail"><span>QC accepted</span><strong>${product.costs.finalStockAccepted === "" ? "Not arrived yet" : product.costs.finalStockAccepted}</strong></div>
         </div>
+        <p class="decision-reason"><strong>Decision reason:</strong> ${escapeHtml(product.decisionReason)}</p>
+        ${product.approvalOverrideReason ? `<p class="override-reason"><strong>Approval override:</strong> ${escapeHtml(product.approvalOverrideReason)}</p>` : ""}
         ${product.reason ? `<p class="meta">${escapeHtml(product.reason)}</p>` : ""}
-        <div class="card-actions">
-          <button class="button secondary" data-action="approve" data-id="${product.id}" type="button">Approve</button>
-          <button class="button secondary" data-action="watchlist" data-id="${product.id}" type="button">Watchlist</button>
-          <button class="button danger" data-action="reject" data-id="${product.id}" type="button">Reject</button>
-          <button class="button secondary" data-action="ordered" data-id="${product.id}" type="button">Mark ordered</button>
-          <button class="button secondary" data-action="arrived" data-id="${product.id}" type="button">Mark arrived</button>
-          <button class="button secondary" data-action="websiteReady" data-id="${product.id}" type="button">Mark website ready</button>
-          <button class="button ghost" data-action="edit" data-id="${product.id}" type="button">Edit</button>
-          <button class="button ghost" data-action="delete" data-id="${product.id}" type="button">Delete</button>
-          ${product.sourceUrl ? `<a class="button ghost" href="${escapeAttribute(product.sourceUrl)}" target="_blank" rel="noreferrer">Open source</a>` : ""}
+        <div class="card-action-row">
+          <div class="primary-card-actions">
+            <button class="button secondary" data-action="approve" data-id="${product.id}" type="button">Approve</button>
+            <button class="button secondary" data-action="watchlist" data-id="${product.id}" type="button">Watchlist</button>
+            <button class="button danger" data-action="reject" data-id="${product.id}" type="button">Reject</button>
+          </div>
+          <details class="more-actions">
+            <summary>More actions</summary>
+            <div class="more-actions-menu">
+              <button class="button ghost compact" data-action="ordered" data-id="${product.id}" type="button">Mark ordered</button>
+              <button class="button ghost compact" data-action="arrived" data-id="${product.id}" type="button">Mark arrived</button>
+              <button class="button ghost compact" data-action="websiteReady" data-id="${product.id}" type="button">Mark website ready</button>
+              <button class="button ghost compact" data-action="edit" data-id="${product.id}" type="button">Edit</button>
+              <button class="button ghost compact delete-subtle" data-action="delete" data-id="${product.id}" type="button">Delete</button>
+              ${product.sourceUrl ? `<a class="button ghost compact" href="${escapeAttribute(product.sourceUrl)}" target="_blank" rel="noreferrer">Open source</a>` : ""}
+            </div>
+          </details>
         </div>
       </div>
     </article>
   `).join("");
+}
+
+function renderLaunchBatch() {
+  const container = document.querySelector("#launchBatchList");
+  const approvedProducts = products.map(productWithComputed).filter(isApproved);
+
+  if (!approvedProducts.length) {
+    container.innerHTML = emptyState("No approved products yet. Approve a product to add it to the Launch Batch.");
+    return;
+  }
+
+  container.innerHTML = approvedProducts.map((product) => {
+    const progress = launchChecklistProgress(product);
+    const publicStock = getPublicStockQuantity(product);
+    return `
+      <article class="launch-card">
+        <div class="launch-card-main">
+          <div>
+            <p class="eyebrow">Launch Batch</p>
+            <h3>${escapeHtml(product.productName)}</h3>
+            <div class="meta">${escapeHtml(product.sku)} - ${escapeHtml(product.category)} - ${escapeHtml(product.sourcePlatform)}</div>
+          </div>
+          <div class="status-line">
+            <span class="pill ${normalizeDecision(product.decision)}">${product.decision}</span>
+            <span class="pill">${product.score}/100</span>
+            <span class="pill">${progress.ready}/${progress.total} ready</span>
+          </div>
+        </div>
+        <div class="launch-grid">
+          <label class="launch-status-field">
+            Launch status
+            <select data-launch-status="${product.id}">
+              ${LAUNCH_STATUSES.map(([value, label]) => `<option value="${value}" ${product.launchStatus === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
+          <div class="detail"><span>Purchase cost</span><strong>${moneyOrDash(product.costs.totalPurchaseCost)}</strong></div>
+          <div class="detail"><span>Selling price</span><strong>${moneyOrDash(product.costs.suggestedSellingPrice)}</strong></div>
+          <div class="detail"><span>Expected profit</span><strong>${moneyOrDash(product.costs.expectedProfit)}</strong></div>
+          <div class="detail ${publicStock <= 0 ? "stock-warning" : ""}"><span>Website stock</span><strong>${publicStock > 0 ? publicStock : "Missing - exports as 0"}</strong></div>
+        </div>
+        <div class="launch-missing">
+          <strong>Missing:</strong> ${progress.missing.length ? progress.missing.map(escapeHtml).join(", ") : "All checklist items ready"}
+        </div>
+        <div class="launch-checklist">
+          ${LAUNCH_CHECKLIST.map(([key, label]) => `
+            <label class="check-filter launch-check">
+              <input type="checkbox" data-launch-check="${product.id}" data-check-key="${key}" ${product.launchChecklist?.[key] ? "checked" : ""} />
+              ${escapeHtml(label)}
+            </label>
+          `).join("")}
+        </div>
+        ${product.sourceUrl ? `<a class="source-link" href="${escapeAttribute(product.sourceUrl)}" target="_blank" rel="noreferrer">Open internal source link</a>` : ""}
+      </article>
+    `;
+  }).join("");
 }
 
 function isRenderableImage(value) {
@@ -898,6 +1157,7 @@ function renderAll() {
   renderDashboardLists();
   updateFilterOptions();
   renderProductList();
+  renderLaunchBatch();
   renderCalculatorPreview();
 }
 
@@ -905,6 +1165,31 @@ function setProductPatch(id, patch) {
   products = products.map((product) => product.id === id ? normalizeProduct({ ...product, ...patch, updatedAt: new Date().toISOString() }) : product);
   saveProducts();
   renderAll();
+}
+
+function approveProduct(id) {
+  const product = products.find((item) => item.id === id);
+  if (!product) return;
+  const computed = productWithComputed(product);
+  const needsOverride = product.approvalStatus === "Rejected" || computed.decision === "Reject";
+  if (needsOverride) {
+    const reason = prompt(`"${product.productName}" is rejected by status or decision. Enter an override reason to approve it:`);
+    if (!reason || !reason.trim()) {
+      showMessage("error", "Approval blocked. Rejected products require an override reason before approval.");
+      return;
+    }
+    setProductPatch(id, {
+      approvalStatus: "Approved",
+      approvalOverrideReason: reason.trim(),
+      launchStatus: product.launchStatus || "shortlisted",
+      dateDecided: TODAY
+    });
+    showMessage("success", `"${product.productName}" was approved with an override reason.`);
+    return;
+  }
+
+  setProductPatch(id, { approvalStatus: "Approved", launchStatus: product.launchStatus || "shortlisted", dateDecided: TODAY });
+  showMessage("success", `"${product.productName}" was approved.`);
 }
 
 function deleteProduct(id) {
@@ -926,10 +1211,105 @@ function exportApprovedCsv() {
     return;
   }
 
+  const { uniqueRows, skippedDuplicates } = dedupeWebsiteExportRows(exportRows);
+
+  if (skippedDuplicates.length) {
+    alert(`Some duplicate website export rows were skipped. BuyOS did not delete any products:\n\n${skippedDuplicates.map(productExportLabel).join("\n")}`);
+  }
+
+  const missingStockProducts = uniqueRows.filter(hasMissingPublicStock);
+  if (missingStockProducts.length) {
+    alert(`Some website-ready products have missing or zero public stock. They will export with Stock Quantity 0:\n\n${missingStockProducts.map(productExportLabel).join("\n")}`);
+  }
+
   const headers = [
-    "SKU", "Product Name", "Category", "Source Platform", "Source URL", "Image/Link",
-    "Suggested Selling Price BDT", "Actual Selling Price BDT", "Final Stock Accepted",
-    "Description Ready", "Photos Ready", "Price Approved", "Score", "Decision", "Content/Reel Idea"
+    "SKU", "Slug", "Product Name", "Category", "Selling Price BDT", "Stock Quantity",
+    "Image URL", "Public Status", "Short Description"
+  ];
+
+  const rows = uniqueRows.map((product) => [
+    product.sku,
+    websiteExportSlug(product),
+    product.productName,
+    product.category,
+    product.costs.hasCostData ? product.costs.suggestedSellingPrice.toFixed(2) : "",
+    getPublicStockQuantity(product),
+    isRenderableImage(product.productImageLink) ? product.productImageLink : "",
+    product.launchStatus === "live" ? "Live" : "Draft",
+    product.productName
+  ]);
+
+  downloadCsv(headers, rows, `aayna-website-upload-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+
+function dedupeWebsiteExportRows(exportRows) {
+  const seenKeys = new Set();
+  const uniqueRows = [];
+  const skippedDuplicates = [];
+
+  exportRows.forEach((product) => {
+    const key = websiteExportDedupeKey(product);
+    if (seenKeys.has(key)) {
+      skippedDuplicates.push(product);
+      return;
+    }
+    seenKeys.add(key);
+    uniqueRows.push(product);
+  });
+
+  return { uniqueRows, skippedDuplicates };
+}
+
+function websiteExportDedupeKey(product) {
+  const sku = normalizeKey(product.enteredSku ?? product.sku);
+  if (sku) return `sku:${sku}`;
+
+  const explicitSlug = normalizeKey(product.slug);
+  if (explicitSlug) return `slug:${explicitSlug}`;
+
+  const generatedSlug = normalizeKey(websiteExportSlug(product));
+  if (generatedSlug) return `slug:${generatedSlug}`;
+
+  const id = normalizeKey(product.id);
+  if (id) return `id:${id}`;
+
+  return [
+    "identity",
+    normalizeKey(product.productName),
+    normalizeKey(product.category),
+    product.costs?.hasCostData ? Number(product.costs.suggestedSellingPrice).toFixed(2) : "no-price"
+  ].join(":");
+}
+
+function websiteExportSlug(product) {
+  return product.slug || slugify(product.productName || product.sku);
+}
+
+function normalizeKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function productExportLabel(product) {
+  return `${product.productName || "Unnamed product"}${product.sku ? ` (${product.sku})` : ""}`;
+}
+
+function exportDecisionCsv() {
+  const exportRows = products
+    .map(productWithComputed)
+    .filter((product) => product.approvalStatus === "Approved" || product.approvalStatus === "Rejected");
+
+  if (!exportRows.length) {
+    alert("No approved or rejected products to export yet.");
+    return;
+  }
+
+  const headers = [
+    "SKU", "Product Name", "Category", "Source Platform", "Supplier Name", "Supplier/Source URL",
+    "Approval Status", "Decision", "Decision Reason", "Override Reason", "Score",
+    "Unit Cost", "Source Currency", "Shipping BDT", "Customs %", "Misc Fees BDT",
+    "Landed Cost BDT", "Purchase Cost BDT", "Suggested Selling Price BDT",
+    "Expected Profit BDT", "Profit Margin", "Auto Flag", "Internal Notes",
+    "QC Notes", "Launch Status", "Launch Checklist", "Date Decided", "Sourcing Status"
   ];
 
   const rows = exportRows.map((product) => [
@@ -937,30 +1317,127 @@ function exportApprovedCsv() {
     product.productName,
     product.category,
     product.sourcePlatform,
+    product.supplierName,
     product.sourceUrl,
-    product.productImageLink,
-    product.costs.suggestedSellingPrice.toFixed(2),
-    product.actualSellingPrice || "",
-    product.costs.finalStockAccepted,
-    product.descriptionReady,
-    product.photosReady,
-    product.priceApproved,
-    product.score,
+    product.approvalStatus,
     product.decision,
-    product.contentIdea
+    product.decisionReason,
+    product.approvalOverrideReason || "",
+    product.score,
+    product.unitCost,
+    product.sourceCurrency,
+    product.shippingCostBdt,
+    product.customsDutyPct,
+    product.miscFeesBdt,
+    product.costs.hasCostData ? product.costs.estimatedLandedCost.toFixed(2) : "",
+    product.costs.hasCostData ? product.costs.totalPurchaseCost.toFixed(2) : "",
+    product.costs.hasCostData ? product.costs.suggestedSellingPrice.toFixed(2) : "",
+    product.costs.hasCostData ? product.costs.expectedProfit.toFixed(2) : "",
+    product.costs.profitMargin === "" ? "" : percent(product.costs.profitMargin),
+    product.autoFlag,
+    product.reason || "",
+    product.qcNotes || "",
+    product.launchStatus || "",
+    JSON.stringify(product.launchChecklist || DEFAULT_LAUNCH_CHECKLIST),
+    product.dateDecided || "",
+    product.sourcingStatus
   ]);
 
+  downloadCsv(headers, rows, `aayna-approved-rejected-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+
+function downloadCsv(headers, rows, filename) {
   const csv = [headers, ...rows]
-    .map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(","))
+    .map((row) => row.map(formatCsvCell).join(","))
     .join("\n");
 
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `aayna-website-upload-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function exportBackupJson() {
+  const backup = {
+    app: BACKUP_APP_MARKER,
+    schemaVersion: APP_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    products: products.map(normalizeProduct),
+    settings: { ...settings }
+  };
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `aayna-buyos-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  showMessage("success", "BuyOS backup JSON exported.");
+}
+
+async function importBackupJson(file) {
+  if (!file) return;
+  hideMessage();
+  try {
+    const text = await file.text();
+    const backup = JSON.parse(text);
+    const validation = validateBackupShape(backup);
+    if (!validation.valid) {
+      showMessage("error", validation.message);
+      return;
+    }
+
+    const confirmed = confirm(`Import ${backup.products.length} products from this AAYNABuyOS backup? This will replace current local products and settings.`);
+    if (!confirmed) {
+      showMessage("error", "Import cancelled. Current data was not changed.");
+      return;
+    }
+
+    products = backup.products.map(normalizeProduct);
+    settings = { ...DEFAULT_SETTINGS, ...(backup.settings || {}) };
+    saveProducts();
+    saveSettings();
+    renderSettings();
+    resetForm();
+    renderAll();
+    showMessage("success", "BuyOS backup imported successfully.");
+  } catch (error) {
+    showMessage("error", `Import failed: ${error.message || "Invalid JSON file"}`);
+  }
+}
+
+function validateBackupShape(backup) {
+  if (!backup || typeof backup !== "object") {
+    return { valid: false, message: "Import failed: backup JSON must be an object." };
+  }
+  const recognizable = backup.app === BACKUP_APP_MARKER || backup.schemaVersion || Array.isArray(backup.products);
+  if (!recognizable) {
+    return { valid: false, message: "Import failed: this does not look like an AAYNABuyOS backup." };
+  }
+  if (!Array.isArray(backup.products)) {
+    return { valid: false, message: "Import failed: backup must include a products array." };
+  }
+  if (backup.settings && typeof backup.settings !== "object") {
+    return { valid: false, message: "Import failed: settings must be an object when provided." };
+  }
+  return { valid: true, message: "" };
+}
+
+function formatCsvCell(cell) {
+  let value = String(cell ?? "");
+  if (/^[=+\-@]/.test(value)) value = `'${value}`;
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function normalizeDecision(decision) {
@@ -1037,11 +1514,11 @@ document.querySelector("#productList").addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const { action, id } = button.dataset;
-  if (action === "approve") setProductPatch(id, { approvalStatus: "Approved", dateDecided: TODAY });
+  if (action === "approve") approveProduct(id);
   if (action === "watchlist") setProductPatch(id, { approvalStatus: "On Hold" });
   if (action === "reject") setProductPatch(id, { approvalStatus: "Rejected", dateDecided: TODAY });
-  if (action === "ordered") setProductPatch(id, { sourcingStatus: "Ordered" });
-  if (action === "arrived") setProductPatch(id, { sourcingStatus: "Arrived", arrivalDate: TODAY, qcStatus: "QC Pending" });
+  if (action === "ordered") setProductPatch(id, { sourcingStatus: "Ordered", launchStatus: "ordered" });
+  if (action === "arrived") setProductPatch(id, { sourcingStatus: "Arrived", launchStatus: "received", arrivalDate: TODAY, qcStatus: "QC Pending" });
   if (action === "websiteReady") {
     setProductPatch(id, {
       productNameFinalized: "Yes",
@@ -1049,6 +1526,7 @@ document.querySelector("#productList").addEventListener("click", (event) => {
       photosReady: "Yes",
       descriptionReady: "Yes",
       priceApproved: "Yes",
+      launchStatus: "website_ready",
       sourcingStatus: "Live on Website"
     });
   }
@@ -1062,12 +1540,42 @@ document.querySelector("#productList").addEventListener("click", (event) => {
   }
 });
 
+document.querySelector("#launchBatchList").addEventListener("change", (event) => {
+  const statusProductId = event.target.dataset.launchStatus;
+  if (statusProductId) {
+    setProductPatch(statusProductId, { launchStatus: event.target.value });
+    showMessage("success", "Launch status updated.");
+    return;
+  }
+
+  const checklistProductId = event.target.dataset.launchCheck;
+  const checkKey = event.target.dataset.checkKey;
+  if (checklistProductId && checkKey) {
+    const product = products.find((item) => item.id === checklistProductId);
+    if (!product) return;
+    setProductPatch(checklistProductId, {
+      launchChecklist: {
+        ...DEFAULT_LAUNCH_CHECKLIST,
+        ...(product.launchChecklist || {}),
+        [checkKey]: event.target.checked
+      }
+    });
+    showMessage("success", "Launch checklist updated.");
+  }
+});
+
 document.querySelectorAll("#decisionFilter, #categoryFilter, #sourceFilter, #minScoreFilter, #under700Filter, #approvedFilter, #watchlistFilter, #rejectedFilter, #websiteReadyFilter")
   .forEach((input) => input.addEventListener("input", renderProductList));
 
 document.querySelector("#resetFormBtn").addEventListener("click", resetForm);
 document.querySelector("#cancelEditBtn").addEventListener("click", resetForm);
 document.querySelector("#exportCsvBtn").addEventListener("click", exportApprovedCsv);
+document.querySelector("#exportDecisionCsvBtn").addEventListener("click", exportDecisionCsv);
+document.querySelector("#exportBackupBtn").addEventListener("click", exportBackupJson);
+document.querySelector("#importBackupInput").addEventListener("change", async (event) => {
+  await importBackupJson(event.target.files?.[0]);
+  event.target.value = "";
+});
 document.querySelector("#seedDataBtn").addEventListener("click", () => {
   hideMessage();
   const stampedSamples = SAMPLE_PRODUCTS.map((product, index) => normalizeProduct({
