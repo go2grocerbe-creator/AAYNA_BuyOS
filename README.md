@@ -146,6 +146,74 @@ Draft scores are suggestions only. Use `Apply draft scores` on a product card to
 
 Future work can add a backend metadata fetcher and backend-only AI worker. Do not put AI keys or service-role Supabase keys in frontend code.
 
+## BuyOS v0.6.1 Source Scout SKU Safety
+
+Source Scout imports use provisional SKUs in the `SCOUT-*` namespace, such as `SCOUT-EAR-0001`, so draft sourcing candidates cannot collide with final `AYN-*` product SKUs.
+
+- Pending Source Scout products are marked as provisional, need human review, and cannot become website-ready.
+- Final `AYN-*` SKUs are required before website export.
+- The Mark website ready action is blocked until the provisional `SCOUT-*` SKU is replaced and `skuFinalized` is set to `Yes`.
+- Website CSV export skips provisional Source Scout products and keeps supplier/source/cost/profit/margin/internal fields out of the public file.
+
+## BuyOS v0.6.2 Persisted Source Scout SKUs
+
+BuyOS repairs older pending Source Scout rows on load when they have blank, duplicate, or accidental `AYN-*` SKUs. Repaired rows get unique category-based `SCOUT-*` SKUs, such as `SCOUT-EAR-0001` and `SCOUT-EAR-0002`, and the fix is saved back to the active storage mode.
+
+- In cloud mode, `product.data.sku` and the `buyos_products.sku` column are synced to the same `SCOUT-*` value.
+- Duplicate visual `SCOUT-*` SKUs are repaired on load instead of being generated only for display.
+- Existing approved, website-ready, and live products are not mutated.
+
+## BuyOS v0.6 Source Scout Worker
+
+BuyOS v0.6 adds a local Node worker for enriching Source Scout draft products with public page metadata. It is intentionally local/manual for now, not a cloud scheduler.
+
+Configure a local worker env file:
+
+```bash
+cp .env.worker.example .env.worker.local
+```
+
+Fill in:
+
+```text
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+BUYOS_WORKSPACE_ID=
+```
+
+Run:
+
+```bash
+npm run scout:worker
+```
+
+Optional dry run:
+
+```bash
+npm run scout:worker -- --dry-run
+```
+
+What the worker does:
+
+- Finds Source Scout products in `buyos_products`
+- Fetches public HTML with standard `fetch`
+- Reads Open Graph, Twitter card, meta description, and JSON-LD Product metadata when available
+- Fills safe blank fields such as product image, rating, review count, and product name only when it is still a placeholder
+- Stores listed source price separately as `listedSourcePrice`; it does not set `unitCost`
+- Updates `metadataStatus`, `metadataFetchedAt`, `metadataSource`, `scoutMetadata`, `missingFields`, and draft score suggestions
+
+What it refuses to do:
+
+- No auto-ordering
+- No auto-approval
+- No CAPTCHA/login/anti-bot bypass
+- No headless browser
+- No aggressive retries
+- No frontend secrets
+- No website CSV exposure of source URLs, listed prices, costs, margins, internal notes, or draft internals
+
+The service-role key must never be committed. `.env.worker`, `.env.worker.local`, and local env files are ignored by Git. Source Scout products remain Pending / Needs Review until a human manually completes and approves them.
+
 ## Launch Batch Workflow
 
 The Launch Batch shows approved products only. A product enters the Launch Batch when it is approved, using the existing approval meaning in the app. Newly approved products default to `shortlisted`.
@@ -309,6 +377,14 @@ The migration uploads local products and settings to Supabase, skips products th
 38. Confirm draft scores appear without changing official scores until Apply draft scores is clicked.
 39. Import the same URLs again and confirm duplicates are skipped.
 40. Confirm imported products do not appear in website CSV until a human completes, approves, and marks them website-ready.
+41. Create `.env.worker.local`, run `npm run scout:worker`, and confirm Source Scout rows get `metadataStatus`, `metadataFetchedAt`, `draftScoreSource`, and `missingFields`.
+42. Reload BuyOS Cloud mode and confirm product cards show metadata status, listed source price when available, draft score source/confidence, missing fields, and Needs Review.
+43. Reload Cloud mode and confirm pending Source Scout products use unique `SCOUT-*` SKUs instead of duplicate `AYN-*` SKUs.
+44. Import two more Source Scout URLs and confirm each receives the next unique `SCOUT-*` SKU for its category.
+45. Try Mark website ready on a `SCOUT-*` product and confirm BuyOS blocks it with the provisional SKU message.
+46. Export website CSV and confirm provisional `SCOUT-*` products are skipped, final approved `AYN-*` products still export, Stock Quantity is not blank, and no supplier/source/cost/profit/margin/internal fields appear.
+47. Query Supabase after reload and confirm Source Scout `data->>'sku'` and the `sku` column match unique `SCOUT-*` values.
+48. Confirm Antique Gold Hoop Earrings remains `AYN-EAR-0001`.
 
 ## Environment Variables
 

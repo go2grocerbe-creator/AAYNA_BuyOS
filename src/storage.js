@@ -370,6 +370,8 @@ function mapSupabaseProductRow(row) {
   product.legacyId = row.legacy_id || product.legacyId || "";
   product.sku = product.sku || row.sku || "";
   product.slug = product.slug || row.slug || "";
+  product.created_at = product.created_at || row.created_at || "";
+  product.updated_at = product.updated_at || row.updated_at || "";
   product.launchStatus = product.launchStatus || (product.approvalStatus === "Approved" ? "shortlisted" : "");
   product.launchChecklist = {
     productNameReady: false,

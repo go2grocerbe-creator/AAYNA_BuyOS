@@ -118,6 +118,16 @@ const FIELD_DEFAULTS = {
   draftScoreConfidence: "",
   draftScoreSource: "",
   draftMissingFields: [],
+  metadataStatus: "",
+  metadataFetchedAt: "",
+  metadataSource: "",
+  metadataError: "",
+  scoutMetadata: null,
+  listedSourcePrice: "",
+  listedSourceCurrency: "",
+  listedPriceFetchedAt: "",
+  missingFields: [],
+  provisionalSku: false,
   importStatus: "",
   needsHumanReview: false,
   importedBy: "",
@@ -399,6 +409,11 @@ async function loadActiveStorageState() {
   storageState = await buyosStorage.initializeStorage();
   const loadedProducts = Array.isArray(storageState.products) ? storageState.products : [];
   products = loadedProducts.map(normalizeProduct);
+  const repairResult = repairSourceScoutSkus(products);
+  products = repairResult.products;
+  if (repairResult.changed) {
+    await persistSourceScoutSkuRepairs(repairResult.repairedProducts);
+  }
   settings = {
     ...DEFAULT_SETTINGS,
     ...(storageState.settings || {})
@@ -423,6 +438,24 @@ async function saveProductToStorage(product) {
     showMessage("error", `Cloud save failed: ${error.message || "Could not save product"}`);
     throw error;
   }
+}
+
+async function persistSourceScoutSkuRepairs(repairedProducts) {
+  if (!Array.isArray(repairedProducts) || !repairedProducts.length) return;
+  const savedProducts = [];
+  for (const product of repairedProducts) {
+    savedProducts.push(await saveProductToStorage(product));
+  }
+  products = products.map((product) => {
+    const saved = savedProducts.find((item) =>
+      matchesProductIdentity(product, item.id)
+      || matchesProductIdentity(product, item.dbId)
+      || matchesProductIdentity(product, item.legacyId)
+    );
+    return saved || product;
+  });
+  console.info(`Repaired ${savedProducts.length} Source Scout provisional SKUs.`);
+  showMessage("success", `Repaired ${savedProducts.length} Source Scout provisional SKUs.`);
 }
 
 async function saveSettings() {
@@ -452,8 +485,13 @@ function normalizeProduct(product) {
     ? { ...product.draftScores }
     : null;
   normalized.draftMissingFields = Array.isArray(product.draftMissingFields) ? product.draftMissingFields : [];
+  normalized.missingFields = Array.isArray(product.missingFields) ? product.missingFields : [];
+  normalized.scoutMetadata = product.scoutMetadata && typeof product.scoutMetadata === "object"
+    ? { ...product.scoutMetadata }
+    : null;
   normalized.needsHumanReview = Boolean(product.needsHumanReview);
   normalized.needsScoreReview = Boolean(product.needsScoreReview);
+  normalized.provisionalSku = Boolean(product.provisionalSku) || isScoutSku(normalized.sku);
   normalized.scores = {};
   SCORE_FIELDS.forEach(([key]) => {
     const existing = product.scores?.[key];
@@ -588,9 +626,156 @@ function roundToWorkbookPrice(value) {
 
 function generateSku(product, index = products.length) {
   if (product.sku) return product.sku;
+  if (product.importedBy === "source_scout") return "SKU repair needed";
   if (!product.productName) return "";
   const prefix = CATEGORY_PREFIX[product.category] || "OTH";
   return `AYN-${prefix}-${String(index + 1).padStart(4, "0")}`;
+}
+
+function generateScoutSku(category, existingProducts = products, currentId = "") {
+  const prefix = CATEGORY_PREFIX[category] || "OTH";
+  const pattern = new RegExp(`^SCOUT-${prefix}-(\\d{4})$`, "i");
+  const used = new Set();
+  existingProducts.forEach((product) => {
+    if (currentId && matchesProductIdentity(product, currentId)) return;
+    extractProductSkuValues(product).forEach((sku) => {
+      const match = sku.match(pattern);
+      if (match) used.add(Number(match[1]));
+    });
+  });
+  let next = 1;
+  while (used.has(next)) next += 1;
+  return `SCOUT-${prefix}-${String(next).padStart(4, "0")}`;
+}
+
+function isScoutSku(sku) {
+  return String(sku || "").toUpperCase().startsWith("SCOUT-");
+}
+
+function hasProvisionalScoutSku(product) {
+  return Boolean(product.provisionalSku)
+    || isScoutSku(product.sku)
+    || (product.importedBy === "source_scout" && product.skuFinalized !== "Yes");
+}
+
+function isProtectedFromScoutRepair(product) {
+  return product.approvalStatus === "Approved"
+    || product.launchStatus === "website_ready"
+    || product.launchStatus === "live";
+}
+
+function isPendingSourceScoutProduct(product) {
+  return product.importedBy === "source_scout"
+    && !isProtectedFromScoutRepair(product);
+}
+
+function extractProductSkuValues(product) {
+  return [
+    product?.sku,
+    product?.enteredSku,
+    product?.data?.sku
+  ]
+    .map((sku) => String(sku || "").trim())
+    .filter(Boolean);
+}
+
+function normalizedSkuKey(sku) {
+  return String(sku || "").trim().toUpperCase();
+}
+
+function matchesProductIdentity(product, identity) {
+  return Boolean(identity) && [product?.id, product?.dbId, product?.legacyId].some((value) => value === identity);
+}
+
+function nextScoutSkuFromUsed(category, usedSkuKeys) {
+  const prefix = CATEGORY_PREFIX[category] || "OTH";
+  const pattern = new RegExp(`^SCOUT-${prefix}-(\\d{4})$`, "i");
+  const usedNumbers = new Set();
+  usedSkuKeys.forEach((sku) => {
+    const match = String(sku || "").match(pattern);
+    if (match) usedNumbers.add(Number(match[1]));
+  });
+  let next = 1;
+  while (usedNumbers.has(next)) next += 1;
+  return `SCOUT-${prefix}-${String(next).padStart(4, "0")}`;
+}
+
+function sourceScoutRepairCompare(a, b) {
+  const dateFields = ["createdAt", "created_at", "importedAt"];
+  for (const field of dateFields) {
+    const aTime = timestampValue(a[field]);
+    const bTime = timestampValue(b[field]);
+    if (aTime !== null && bTime !== null && aTime !== bTime) return aTime - bTime;
+    if (aTime !== null && bTime === null) return -1;
+    if (aTime === null && bTime !== null) return 1;
+  }
+
+  const nameCompare = normalizeKey(a.productName).localeCompare(normalizeKey(b.productName));
+  if (nameCompare) return nameCompare;
+  return normalizeKey(a.id || a.dbId || a.legacyId).localeCompare(normalizeKey(b.id || b.dbId || b.legacyId));
+}
+
+function timestampValue(value) {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function repairSourceScoutSkus(sourceProducts) {
+  const repairedProducts = [];
+  const usedSkuKeys = new Set();
+  let changed = false;
+  const markRepaired = (product) => {
+    const exists = repairedProducts.some((item) =>
+      matchesProductIdentity(item, product.id)
+      || matchesProductIdentity(item, product.dbId)
+      || matchesProductIdentity(item, product.legacyId)
+    );
+    if (!exists) repairedProducts.push(product);
+  };
+
+  const products = sourceProducts.map((product) => ({ ...product }));
+  sourceProducts.forEach((product) => {
+    if (isPendingSourceScoutProduct(product)) return;
+    extractProductSkuValues(product).forEach((sku) => usedSkuKeys.add(normalizedSkuKey(sku)));
+  });
+
+  products
+    .filter(isPendingSourceScoutProduct)
+    .sort(sourceScoutRepairCompare)
+    .forEach((next) => {
+      const skuKey = normalizedSkuKey(next.sku);
+      const needsRepair = !skuKey
+        || skuKey.startsWith("AYN-")
+        || !isScoutSku(next.sku)
+        || usedSkuKeys.has(skuKey);
+
+      if (needsRepair) {
+        next.sku = nextScoutSkuFromUsed(next.category, usedSkuKeys);
+        next.provisionalSku = true;
+        next.skuFinalized = "No";
+        usedSkuKeys.add(normalizedSkuKey(next.sku));
+        changed = true;
+        markRepaired(next);
+        return;
+      }
+
+      usedSkuKeys.add(skuKey);
+      if (hasProvisionalScoutSku(next)) {
+        if (!next.provisionalSku) {
+          next.provisionalSku = true;
+          changed = true;
+          markRepaired(next);
+        }
+        if (next.skuFinalized === "Yes") {
+          next.skuFinalized = "No";
+          changed = true;
+          markRepaired(next);
+        }
+      }
+    });
+
+  return { products, changed, repairedProducts };
 }
 
 function calculateCosts(product) {
@@ -708,12 +893,24 @@ function decisionReason(product) {
 }
 
 function readyForWebsiteUpload(product) {
+  if (hasProvisionalScoutSku(product)) return false;
   return ["productNameFinalized", "skuFinalized", "photosReady", "descriptionReady", "priceApproved"]
-    .every((key) => product[key] === "Yes");
+    .every((key) => product[key] === "Yes")
+    && product.skuFinalized === "Yes"
+    && !isScoutSku(product.sku);
 }
 
 function isWebsiteExportReady(product) {
+  if (hasProvisionalScoutSku(product)) return false;
   return readyForWebsiteUpload(product)
+    || product.launchStatus === "website_ready"
+    || product.launchStatus === "live"
+    || Boolean(product.launchChecklist?.websiteExportReady);
+}
+
+function isPotentialWebsiteExportReadyIgnoringSku(product) {
+  return ["productNameFinalized", "photosReady", "descriptionReady", "priceApproved"]
+    .every((key) => product[key] === "Yes")
     || product.launchStatus === "website_ready"
     || product.launchStatus === "live"
     || Boolean(product.launchChecklist?.websiteExportReady);
@@ -1147,6 +1344,8 @@ function renderProductList() {
             <span class="pill ${normalizeDecision(product.decision)}">${product.decision}</span>
             <span class="pill">${product.score}/100</span>
             <span class="pill">${escapeHtml(product.approvalStatus)}</span>
+            ${product.needsHumanReview ? '<span class="pill maybe">Needs review</span>' : ""}
+            ${hasProvisionalScoutSku(product) ? '<span class="pill maybe">Provisional SKU</span>' : ""}
             ${product.readyForWebsiteUpload ? '<span class="pill buy">Website ready</span>' : ""}
           </div>
         </div>
@@ -1166,8 +1365,12 @@ function renderProductList() {
           <div class="detail"><span>Reviews</span><strong>${toNumber(product.reviewCount).toLocaleString()}</strong></div>
           <div class="detail"><span>Risk</span><strong>${escapeHtml(product.fragilityLevel)} / ${escapeHtml(product.courierRisk)}</strong></div>
           <div class="detail"><span>QC accepted</span><strong>${product.costs.finalStockAccepted === "" ? "Not arrived yet" : product.costs.finalStockAccepted}</strong></div>
+          ${product.metadataStatus ? `<div class="detail"><span>Metadata</span><strong>${escapeHtml(product.metadataStatus)}</strong></div>` : ""}
+          ${product.listedSourcePrice ? `<div class="detail"><span>Listed source price</span><strong>${escapeHtml(product.listedSourceCurrency || "")} ${escapeHtml(product.listedSourcePrice)}</strong></div>` : ""}
         </div>
         <p class="decision-reason"><strong>Decision reason:</strong> ${escapeHtml(product.decisionReason)}</p>
+        ${hasProvisionalScoutSku(product) ? '<p class="decision-reason"><strong>Provisional SKU:</strong> Replace SCOUT SKU with final AYN SKU before website export.</p>' : ""}
+        ${product.missingFields?.length ? `<p class="decision-reason"><strong>Missing fields:</strong> ${escapeHtml(product.missingFields.join(", "))}</p>` : ""}
         ${product.draftScores ? `
           <div class="draft-score-box">
             <div class="draft-score-head">
@@ -1175,6 +1378,7 @@ function renderProductList() {
               <span class="pill maybe">Confidence: ${escapeHtml(product.draftScoreConfidence || "low")}</span>
             </div>
             <p>${escapeHtml(product.draftScoreReason || "Draft score needs human review.")}</p>
+            <div class="meta">Source: ${escapeHtml(product.draftScoreSource || "draft")}</div>
             <div class="meta">Missing fields: ${escapeHtml((product.draftMissingFields || []).join(", ") || "None flagged")}</div>
             <div class="draft-score-grid">
               ${SCORE_FIELDS.map(([key, label]) => `<span>${escapeHtml(label)}: <strong>${clampScore(product.draftScores?.[key])}</strong></span>`).join("")}
@@ -1328,13 +1532,28 @@ async function deleteProduct(id) {
 }
 
 function exportApprovedCsv() {
-  const exportRows = products
-    .map(productWithComputed)
-    .filter((product) => product.approvalStatus === "Approved" && product.readyForWebsiteUpload);
+  const computedProducts = products.map(productWithComputed);
+  const skippedProvisionalProducts = computedProducts.filter((product) =>
+    product.approvalStatus === "Approved"
+    && hasProvisionalScoutSku(product)
+    && isPotentialWebsiteExportReadyIgnoringSku(product)
+  );
+  const exportRows = computedProducts
+    .filter((product) => product.approvalStatus === "Approved"
+      && product.readyForWebsiteUpload
+      && !hasProvisionalScoutSku(product));
 
   if (!exportRows.length) {
+    if (skippedProvisionalProducts.length) {
+      alert(`No approved website-ready products were exported. Replace provisional SCOUT SKUs with final AYN SKUs first:\n\n${skippedProvisionalProducts.map(productExportLabel).join("\n")}`);
+      return;
+    }
     alert("No approved website-ready products to export yet.");
     return;
+  }
+
+  if (skippedProvisionalProducts.length) {
+    alert(`Some products were skipped because they still use provisional SCOUT SKUs:\n\n${skippedProvisionalProducts.map(productExportLabel).join("\n")}`);
   }
 
   const { uniqueRows, skippedDuplicates } = dedupeWebsiteExportRows(exportRows);
@@ -1516,15 +1735,19 @@ function sourceScoutMissingFields(product) {
   return checks.filter(([key]) => !hasValue(product[key])).map(([, label]) => label);
 }
 
-function createSourceScoutCandidate(sourceUrl, options) {
+function createSourceScoutCandidate(sourceUrl, options, existingProducts = products) {
   const productName = inferProductNameFromUrl(sourceUrl);
   const category = options.category || "Other";
   const draftScores = sourceScoutDraftScores(productName, category, options.sourcePlatform, options.maxTargetPrice);
+  const provisionalSku = generateScoutSku(category, existingProducts);
   const product = normalizeProduct({
     id: crypto.randomUUID(),
     dateAdded: TODAY,
     productName,
     slug: slugify(productName),
+    sku: provisionalSku,
+    provisionalSku: true,
+    skuFinalized: "No",
     sourcePlatform: options.sourcePlatform,
     sourceUrl,
     category,
@@ -1796,7 +2019,7 @@ sourceScoutForm.addEventListener("submit", async (event) => {
   try {
     const savedCandidates = [];
     for (const sourceUrl of urls) {
-      const candidate = createSourceScoutCandidate(sourceUrl, options);
+      const candidate = createSourceScoutCandidate(sourceUrl, options, [...products, ...savedCandidates]);
       if (hasProductIdentityMatch(candidate, [...products, ...savedCandidates])) {
         skipped += 1;
         continue;
@@ -1843,6 +2066,11 @@ document.querySelector("#productList").addEventListener("click", async (event) =
   if (action === "ordered") await setProductPatch(id, { sourcingStatus: "Ordered", launchStatus: "ordered" });
   if (action === "arrived") await setProductPatch(id, { sourcingStatus: "Arrived", launchStatus: "received", arrivalDate: TODAY, qcStatus: "QC Pending" });
   if (action === "websiteReady") {
+    const product = products.find((item) => item.id === id);
+    if (product && hasProvisionalScoutSku(product)) {
+      showMessage("error", "Replace the provisional SCOUT SKU with a final AYN SKU before marking website ready.");
+      return;
+    }
     await setProductPatch(id, {
       productNameFinalized: "Yes",
       skuFinalized: "Yes",
