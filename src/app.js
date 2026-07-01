@@ -936,6 +936,7 @@ function renderStorageStatus() {
     statusParts.push("Storage mode: Cloud");
     statusParts.push(`Signed in: ${user.email || "Supabase user"}`);
     statusParts.push(`Workspace: ${workspace.name || "AAYNA BuyOS"}`);
+    if (storageState.error) statusParts.push(storageState.error);
   } else if (user && workspace) {
     statusParts.push("Storage mode: Local fallback");
     statusParts.push(buyosStorage.getStorageError() || "Cloud load failed. Local mode is still available.");

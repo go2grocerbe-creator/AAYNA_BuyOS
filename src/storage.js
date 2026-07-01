@@ -45,14 +45,26 @@ export async function initializeStorage() {
 
     storageMode = "cloud";
     lastStatus = `Cloud mode: ${currentWorkspace.name || "AAYNA BuyOS"}`;
+    const cloudProducts = await loadProducts();
+    let cloudSettings = loadLocalSettings();
+    let settingsWarning = "";
+    try {
+      cloudSettings = await loadSettings();
+    } catch (error) {
+      settingsWarning = "Cloud settings load failed; using local/default settings.";
+      lastError = settingsWarning;
+      console.warn("[BuyOS] Cloud settings load failed; using fallback settings", {
+        message: error?.message || "Unknown error"
+      });
+    }
     return {
       mode: storageMode,
       user: currentUser,
       workspace: currentWorkspace,
       status: lastStatus,
-      error: "",
-      products: await loadProducts(),
-      settings: await loadSettings()
+      error: settingsWarning,
+      products: cloudProducts,
+      settings: cloudSettings
     };
   } catch (error) {
     lastError = error?.message?.startsWith("Cloud product load failed:")
@@ -241,11 +253,15 @@ export async function loadSettings() {
 
   const { data, error } = await supabase
     .from("buyos_settings")
-    .select("id, data")
+    .select("workspace_id, data")
     .eq("workspace_id", currentWorkspace.id)
     .maybeSingle();
 
   if (error) throw error;
+  console.info("[BuyOS] Cloud settings loaded", {
+    found: Boolean(data),
+    workspaceId: currentWorkspace.id
+  });
   return data?.data || loadLocalSettings();
 }
 
@@ -255,21 +271,24 @@ export async function saveSettings(settings) {
     return settings;
   }
 
-  const { data: existing, error: findError } = await supabase
-    .from("buyos_settings")
-    .select("id")
-    .eq("workspace_id", currentWorkspace.id)
-    .maybeSingle();
-  if (findError) throw findError;
-
   const payload = {
     workspace_id: currentWorkspace.id,
-    data: settings
+    data: settings,
+    updated_by: currentUser.id
   };
 
-  const result = existing?.id
-    ? await supabase.from("buyos_settings").update(payload).eq("id", existing.id)
-    : await supabase.from("buyos_settings").insert(payload);
+  let result = await supabase
+    .from("buyos_settings")
+    .upsert(payload, { onConflict: "workspace_id" });
+
+  if (isMissingColumnError(result.error, "updated_by")) {
+    result = await supabase
+      .from("buyos_settings")
+      .upsert({
+        workspace_id: currentWorkspace.id,
+        data: settings
+      }, { onConflict: "workspace_id" });
+  }
 
   if (result.error) throw result.error;
   await logAuditEvent("settings_updated", {}, null);
@@ -367,6 +386,11 @@ function mapSupabaseProductRow(row) {
 
 function isObjectLike(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isMissingColumnError(error, columnName) {
+  const message = error?.message || "";
+  return Boolean(error) && message.includes(columnName) && /column|schema|cache/i.test(message);
 }
 
 async function fetchFirstWorkspaceForUser(userId) {

@@ -115,6 +115,12 @@ If `Cloud rows loaded` is greater than `Active products shown`, the row mapping 
 
 A valid Supabase product row has an `id` and object-like `data`. The mapper does not require product name, category, score fields, launch fields, website readiness fields, or local schema metadata to exist before showing the product.
 
+## BuyOS v0.4.4 Troubleshooting
+
+If `Cloud products mapped` is greater than `Active products shown`, check cloud settings load/save. BuyOS v0.4.4 keeps successfully loaded cloud products even if settings loading fails.
+
+The `buyos_settings` table uses `workspace_id` as the key, not `id`. Settings load selects `workspace_id, data`; settings save uses an upsert on `workspace_id`.
+
 ## Launch Batch Workflow
 
 The Launch Batch shows approved products only. A product enters the Launch Batch when it is approved, using the existing approval meaning in the app. Newly approved products default to `shortlisted`.
@@ -272,6 +278,7 @@ The migration uploads local products and settings to Supabase, skips products th
 32. Delete all cloud product rows, click Reload from cloud, and confirm dashboard Total products is 0 without old local demo products reappearing.
 33. Confirm the storage panel shows Cloud rows loaded: 1, Cloud products mapped: 1, and Active products shown: 1 when Supabase has one product row.
 34. Export JSON backup and confirm it contains the same number of products as Active products shown.
+35. If `buyos_settings` is empty or missing optional columns, reload cloud and confirm products still remain visible.
 
 ## Environment Variables
 
